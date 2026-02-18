@@ -139,6 +139,8 @@ function findClaimBoundary(text: string, matchStart: number, matchEnd: number): 
   return { start, end };
 }
 
+let matchCount = 0; // Debug counter
+
 function detectStatisticClaims(textNode: Text, claims: DetectedClaim[]): void {
   const text = textNode.textContent || '';
   
@@ -148,15 +150,18 @@ function detectStatisticClaims(textNode: Text, claims: DetectedClaim[]): void {
     
     let match;
     while ((match = pattern.exec(text)) !== null) {
+      matchCount++;
+      console.log(`[LieDetector] Pattern match #${matchCount}:`, match[0], 'in:', text.substring(0, 50));
+      
       // Check if this text contains health-related keywords
       const boundary = findClaimBoundary(text, match.index, match.index + match[0].length);
       const sentenceText = text.slice(boundary.start, boundary.end).trim();
       
-      const hasHealthContext = HEALTH_KEYWORDS.some(keyword => 
-        sentenceText.toLowerCase().includes(keyword.toLowerCase())
-      );
-      
-      if (!hasHealthContext) continue;
+      // TODO: Re-enable health keyword check when expanding beyond MVP testing
+      // const hasHealthContext = HEALTH_KEYWORDS.some(keyword => 
+      //   sentenceText.toLowerCase().includes(keyword.toLowerCase())
+      // );
+      // if (!hasHealthContext) continue;
       
       // Skip if too short
       if (sentenceText.length < 20) continue;
@@ -254,6 +259,13 @@ function getTextNodes(root: Element): Text[] {
 export function detectClaims(root: Element = document.body): DetectedClaim[] {
   const claims: DetectedClaim[] = [];
   const textNodes = getTextNodes(root);
+  
+  console.log(`[LieDetector] Found ${textNodes.length} text nodes to scan`);
+  
+  // Debug: show some sample text content
+  if (textNodes.length > 0) {
+    console.log('[LieDetector] Sample text nodes:', textNodes.slice(0, 3).map(n => n.textContent?.substring(0, 100)));
+  }
   
   for (const textNode of textNodes) {
     detectStatisticClaims(textNode, claims);

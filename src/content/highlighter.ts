@@ -92,7 +92,7 @@ export function highlightClaim(
   detectedClaim: DetectedClaim, 
   verification?: Verification
 ): HighlightedClaim | null {
-  const { claim, range } = detectedClaim;
+  const { claim, element } = detectedClaim;
   
   // Don't re-highlight already highlighted claims
   if (highlightedClaims.has(claim.id)) {
@@ -104,18 +104,23 @@ export function highlightClaim(
   }
   
   try {
-    // Create highlight wrapper
-    const highlight = document.createElement('span');
-    highlight.className = HIGHLIGHT_CLASS;
-    highlight.dataset.claimId = claim.id;
+    // Instead of wrapping text (which fails on dynamic pages),
+    // mark the parent element directly
+    const targetElement = element;
+    
+    // Add our highlight class and data attributes to the parent element
+    targetElement.classList.add(HIGHLIGHT_CLASS);
+    targetElement.dataset.claimId = claim.id;
     
     // Default to unverified styling
     const rating = verification?.rating || 'unverified';
-    highlight.style.cssText = getUnderlineStyle(rating);
-    highlight.setAttribute('data-rating', rating);
+    const color = RATING_COLORS[rating];
+    const style = rating === 'unverified' ? 'dotted' : 'solid';
     
-    // Wrap the range content
-    range.surroundContents(highlight);
+    // Apply inline styles with !important to override page styles
+    targetElement.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
+    targetElement.style.setProperty('background-color', `${color}22`, 'important');
+    targetElement.setAttribute('data-rating', rating);
     
     // Setup tooltip interactions
     let tooltip: HTMLElement | null = null;
@@ -130,7 +135,7 @@ export function highlightClaim(
       if (!tooltip && verification) {
         tooltip = createTooltip(verification);
         document.body.appendChild(tooltip);
-        positionTooltip(tooltip, highlight);
+        positionTooltip(tooltip, targetElement);
         
         // Allow hovering over tooltip
         tooltip.addEventListener('mouseenter', showTooltip);
@@ -157,17 +162,16 @@ export function highlightClaim(
       }
     };
     
-    highlight.addEventListener('mouseenter', showTooltip);
-    highlight.addEventListener('mouseleave', hideTooltipDelayed);
-    highlight.addEventListener('click', (e) => {
-      e.preventDefault();
-      // Could open sidebar panel here in the future
+    targetElement.addEventListener('mouseenter', showTooltip);
+    targetElement.addEventListener('mouseleave', hideTooltipDelayed);
+    targetElement.addEventListener('click', (e) => {
+      // Don't prevent default - let links still work
       console.log('[LieDetector] Claim clicked:', claim.id);
     });
     
     const highlighted: HighlightedClaim = {
       claimId: claim.id,
-      highlightElement: highlight,
+      highlightElement: targetElement,
       verification,
     };
     
@@ -190,7 +194,11 @@ export function updateVerification(claimId: string, verification: Verification):
   
   // Update highlight style
   const rating = verification.rating;
-  highlighted.highlightElement.style.cssText = getUnderlineStyle(rating);
+  const color = RATING_COLORS[rating];
+  const style = rating === 'unverified' ? 'dotted' : 'solid';
+  
+  highlighted.highlightElement.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
+  highlighted.highlightElement.style.setProperty('background-color', `${color}22`, 'important');
   highlighted.highlightElement.setAttribute('data-rating', rating);
   
   // Remove old tooltip if exists (will be recreated on next hover)
@@ -204,16 +212,14 @@ export function removeHighlight(claimId: string): void {
   const highlighted = highlightedClaims.get(claimId);
   if (!highlighted) return;
   
-  const highlight = highlighted.highlightElement;
+  const element = highlighted.highlightElement;
   
-  // Unwrap the content
-  const parent = highlight.parentNode;
-  if (parent) {
-    while (highlight.firstChild) {
-      parent.insertBefore(highlight.firstChild, highlight);
-    }
-    parent.removeChild(highlight);
-  }
+  // Remove our styles and classes (don't remove the element itself)
+  element.classList.remove(HIGHLIGHT_CLASS);
+  element.style.removeProperty('border-bottom');
+  element.style.removeProperty('background-color');
+  element.removeAttribute('data-claim-id');
+  element.removeAttribute('data-rating');
   
   // Remove tooltip if exists
   const tooltip = document.querySelector(`.${TOOLTIP_CLASS}[data-claim-id="${claimId}"]`);

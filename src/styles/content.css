@@ -10,15 +10,16 @@
    ======================================== */
 
 .LieDetector-highlight {
-  cursor: pointer;
-  position: relative;
-  transition: background-color 0.2s ease;
-  border-radius: 2px;
-  padding-bottom: 1px;
+  cursor: pointer !important;
+  position: relative !important;
+  transition: background-color 0.2s ease !important;
+  border-radius: 2px !important;
+  padding: 2px 0 !important;
+  display: inline !important;
 }
 
 .LieDetector-highlight:hover {
-  background-color: rgba(99, 102, 241, 0.1);
+  background-color: rgba(99, 102, 241, 0.2) !important;
 }
 
 /* Rating-specific styles applied via inline styles from JS */

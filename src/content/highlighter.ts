@@ -62,7 +62,8 @@ function getUnderlineStyle(rating: Rating): string {
   const color = RATING_COLORS[rating];
   // Use a dotted underline for unverified, solid for others
   const style = rating === 'unverified' ? 'dotted' : 'solid';
-  return `border-bottom: 2px ${style} ${color}`;
+  // Use !important to override page styles
+  return `border-bottom: 2px ${style} ${color} !important; background-color: ${color}22 !important; padding: 2px 0 !important;`;
 }
 
 function positionTooltip(tooltip: HTMLElement, anchor: HTMLElement): void {
@@ -172,9 +173,11 @@ export function highlightClaim(
     
     highlightedClaims.set(claim.id, highlighted);
     
+    console.log('[LieDetector] Successfully highlighted claim:', claim.id, claim.text.substring(0, 50));
+    
     return highlighted;
   } catch (e) {
-    console.debug('[LieDetector] Failed to highlight claim:', e);
+    console.error('[LieDetector] Failed to highlight claim:', e, 'Claim:', claim.text.substring(0, 50));
     return null;
   }
 }

@@ -124,7 +124,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'CLAIM_VERIFIED': {
       const { claimId, verification } = (message as ClaimVerifiedMessage).payload;
       updateVerification(claimId, verification);
-      break;
+      return false;
     }
     
     case 'GET_PAGE_CLAIMS': {
@@ -132,7 +132,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         claims: detectedClaims.map(d => d.claim),
         url: window.location.href,
       });
-      break;
+      return true; // Keep channel open for response
     }
     
     case 'UPDATE_SETTINGS': {
@@ -142,18 +142,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       } else if (!isInitialized) {
         scanPage();
       }
-      break;
+      return false;
     }
     
     case 'RESCAN_PAGE': {
       removeAllHighlights();
       detectedClaims = [];
       scanPage();
-      break;
+      return false;
     }
   }
   
-  return true; // Keep channel open for async response
+  return false;
 });
 
 // Initialize on DOM ready

@@ -1,0 +1,20 @@
+# Extension build output
+dist/
+
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Optional: source maps in production
+*.map

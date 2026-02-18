@@ -1,0 +1,281 @@
+/**
+ * LieDetector - Content Script Styles
+ * 
+ * Styles for claim highlights and tooltips injected into web pages.
+ * Designed to be subtle, accessible, and non-intrusive.
+ */
+
+/* ========================================
+   Claim Highlights
+   ======================================== */
+
+.LieDetector-highlight {
+  cursor: pointer;
+  position: relative;
+  transition: background-color 0.2s ease;
+  border-radius: 2px;
+  padding-bottom: 1px;
+}
+
+.LieDetector-highlight:hover {
+  background-color: rgba(99, 102, 241, 0.1);
+}
+
+/* Rating-specific styles applied via inline styles from JS */
+/* These are fallbacks */
+
+.LieDetector-highlight[data-rating="verified"] {
+  border-bottom: 2px solid #22c55e !important;
+}
+
+.LieDetector-highlight[data-rating="mostly_true"] {
+  border-bottom: 2px solid #84cc16 !important;
+}
+
+.LieDetector-highlight[data-rating="mixed"] {
+  border-bottom: 2px solid #eab308 !important;
+}
+
+.LieDetector-highlight[data-rating="unverified"] {
+  border-bottom: 2px dotted #9ca3af !important;
+}
+
+.LieDetector-highlight[data-rating="mostly_false"] {
+  border-bottom: 2px solid #f97316 !important;
+}
+
+.LieDetector-highlight[data-rating="false"] {
+  border-bottom: 2px solid #ef4444 !important;
+}
+
+.LieDetector-highlight[data-rating="opinion"] {
+  border-bottom: 2px solid #8b5cf6 !important;
+}
+
+.LieDetector-highlight[data-rating="outdated"] {
+  border-bottom: 2px dashed #6b7280 !important;
+}
+
+/* ========================================
+   Tooltips
+   ======================================== */
+
+.LieDetector-tooltip {
+  position: absolute;
+  z-index: 2147483647; /* Max z-index to ensure visibility */
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: white;
+  border-radius: 12px;
+  box-shadow: 
+    0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -2px rgba(0, 0, 0, 0.1),
+    0 0 0 1px rgba(0, 0, 0, 0.05);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: #1f2937;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(8px);
+  transition: 
+    opacity 0.2s ease,
+    visibility 0.2s ease,
+    transform 0.2s ease;
+  pointer-events: none;
+}
+
+.LieDetector-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+/* Tooltip Header */
+.LieDetector-tooltip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  background: #fafafa;
+  border-radius: 12px 12px 0 0;
+}
+
+.LieDetector-rating {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.LieDetector-confidence {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* Tooltip Body */
+.LieDetector-tooltip-body {
+  padding: 12px 16px;
+}
+
+.LieDetector-summary {
+  margin: 0 0 12px 0;
+  color: #374151;
+}
+
+/* Sources List */
+.LieDetector-sources {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.LieDetector-sources-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: 8px;
+}
+
+.LieDetector-sources ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.LieDetector-sources li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.LieDetector-sources li:last-child {
+  margin-bottom: 0;
+}
+
+.LieDetector-sources a {
+  color: #4f46e5;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.LieDetector-sources a:hover {
+  text-decoration: underline;
+}
+
+.LieDetector-peer-reviewed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: #dcfce7;
+  color: #16a34a;
+  border-radius: 50%;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+/* Caveats */
+.LieDetector-caveats {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fef3c7;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.LieDetector-caveats-label {
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+/* ========================================
+   Animations
+   ======================================== */
+
+@keyframes LieDetector-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.LieDetector-highlight.loading {
+  animation: LieDetector-pulse 1.5s ease-in-out infinite;
+}
+
+/* ========================================
+   Print Styles
+   ======================================== */
+
+@media print {
+  .LieDetector-highlight {
+    border-bottom: none !important;
+    background: none !important;
+  }
+  
+  .LieDetector-tooltip {
+    display: none !important;
+  }
+}
+
+/* ========================================
+   Reduced Motion
+   ======================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .LieDetector-tooltip {
+    transition: none;
+  }
+  
+  .LieDetector-highlight.loading {
+    animation: none;
+  }
+}
+
+/* ========================================
+   Dark Mode Support (future)
+   ======================================== */
+
+@media (prefers-color-scheme: dark) {
+  .LieDetector-tooltip {
+    background: #1f2937;
+    color: #f9fafb;
+    box-shadow: 
+      0 4px 6px -1px rgba(0, 0, 0, 0.3),
+      0 2px 4px -2px rgba(0, 0, 0, 0.2),
+      0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+  
+  .LieDetector-tooltip-header {
+    background: #111827;
+    border-bottom-color: #374151;
+  }
+  
+  .LieDetector-summary {
+    color: #e5e7eb;
+  }
+  
+  .LieDetector-sources {
+    border-top-color: #374151;
+  }
+  
+  .LieDetector-sources a {
+    color: #818cf8;
+  }
+  
+  .LieDetector-caveats {
+    background: #422006;
+    color: #fde68a;
+  }
+}

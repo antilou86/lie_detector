@@ -14,7 +14,7 @@ import {
   VerifyClaimsMessage,
   VerifySelectionMessage 
 } from '@/types';
-import { verifyClaim, verifyClaimsBatch } from '@/services/mockVerificationService';
+import { verifyClaimsApi, verifyClaimApi, checkBackendHealth } from '@/services/apiVerificationService';
 
 // Initialize context menu
 chrome.runtime.onInstalled.addListener(() => {
@@ -53,8 +53,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   switch (message.type) {
     case 'VERIFY_CLAIMS': {
-      const { claims } = (message as VerifyClaimsMessage).payload;
-      handleVerifyClaims(claims, tabId);
+      const { claims, url } = (message as VerifyClaimsMessage).payload;
+      handleVerifyClaims(claims, tabId, url);
       break;
     }
     
@@ -102,14 +102,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-async function handleVerifyClaims(claims: Claim[], tabId?: number): Promise<void> {
+async function handleVerifyClaims(claims: Claim[], tabId?: number, url?: string): Promise<void> {
   if (!claims.length) return;
   
-  console.log(`[LieDetector] Verifying ${claims.length} claims`);
+  console.log(`[LieDetector] Verifying ${claims.length} claims via backend API`);
   
   try {
-    // Use mock service for MVP - replace with real API later
-    const verifications = await verifyClaimsBatch(claims);
+    // Use real backend API
+    const verifications = await verifyClaimsApi(claims, url);
     
     // Send verifications back to content script
     if (tabId) {
@@ -159,7 +159,7 @@ async function handleVerifySelection(text: string, url: string, tabId?: number):
   };
   
   try {
-    const verification = await verifyClaim(claim);
+    const verification = await verifyClaimApi(claim, url);
     
     if (tabId) {
       chrome.tabs.sendMessage(tabId, {

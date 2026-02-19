@@ -11,11 +11,9 @@
 
 .LieDetector-highlight {
   cursor: pointer !important;
-  position: relative !important;
+  /* Removed position: relative and display: inline to avoid breaking flex/grid layouts */
   transition: background-color 0.2s ease !important;
   border-radius: 2px !important;
-  padding: 2px 0 !important;
-  display: inline !important;
 }
 
 .LieDetector-highlight:hover {

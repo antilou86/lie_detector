@@ -137,6 +137,7 @@ export function highlightClaim(
     // Setup tooltip interactions
     let tooltip: HTMLElement | null = null;
     let hideTimeout: number | null = null;
+    const claimId = claim.id;
     
     const showTooltip = () => {
       if (hideTimeout) {
@@ -144,8 +145,21 @@ export function highlightClaim(
         hideTimeout = null;
       }
       
-      if (!tooltip && verification) {
-        tooltip = createTooltip(verification);
+      // Get current verification from stored state (may be updated after initial highlight)
+      const currentData = highlightedClaims.get(claimId);
+      const currentVerification = currentData?.verification;
+      
+      console.log('[LieDetector] showTooltip called, verification:', currentVerification ? 'yes' : 'no');
+      
+      // Check if tooltip was removed (e.g., by updateVerification)
+      if (tooltip && !document.body.contains(tooltip)) {
+        tooltip = null;
+      }
+      
+      if (!tooltip && currentVerification) {
+        console.log('[LieDetector] Creating tooltip for claim:', claimId);
+        tooltip = createTooltip(currentVerification);
+        tooltip.setAttribute('data-claim-id', claimId);
         document.body.appendChild(tooltip);
         positionTooltip(tooltip, targetElement);
         
@@ -200,8 +214,12 @@ export function highlightClaim(
 
 export function updateVerification(claimId: string, verification: Verification): void {
   const highlighted = highlightedClaims.get(claimId);
-  if (!highlighted) return;
+  if (!highlighted) {
+    console.log('[LieDetector] updateVerification: claim not found', claimId);
+    return;
+  }
   
+  console.log('[LieDetector] updateVerification:', claimId, verification.rating);
   highlighted.verification = verification;
   
   // Update highlight style

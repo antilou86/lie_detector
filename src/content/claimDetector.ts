@@ -1,9 +1,9 @@
 /**
- * Claim Detector - Identifies health/medical claims in page text
+ * Claim Detector - Identifies verifiable claims in page text
  * 
  * MVP Strategy:
  * 1. Pattern-based detection for statistics and percentages
- * 2. Medical keyword triggers (drug names, conditions, treatments)
+ * 2. Claim trigger phrases (studies, experts, research)
  * 3. Quote patterns with attribution
  * 
  * Future: Replace with NLP model for better accuracy
@@ -11,40 +11,78 @@
 
 import { Claim, ClaimType, Entity, DetectedClaim } from '@/types';
 
-// Common health/medical terms that signal verifiable claims
-const HEALTH_KEYWORDS = [
-  // Treatments & interventions
-  'vaccine', 'vaccination', 'drug', 'medication', 'treatment', 'therapy',
-  'dose', 'dosage', 'antibiotic', 'supplement', 'vitamin',
-  
-  // Conditions & diseases
-  'cancer', 'diabetes', 'heart disease', 'covid', 'coronavirus', 'flu',
-  'infection', 'disease', 'condition', 'syndrome', 'disorder',
-  
-  // Medical claims
-  'cure', 'prevent', 'treat', 'cause', 'risk', 'symptom', 'side effect',
-  'effective', 'efficacy', 'clinical trial', 'study shows', 'research shows',
-  'scientists found', 'doctors say', 'experts say',
-  
-  // Organizations
-  'FDA', 'CDC', 'WHO', 'NIH', 'NHS',
-];
-
 // Patterns that typically indicate verifiable statistics
 const STATISTIC_PATTERNS = [
-  /(\d+(?:\.\d+)?)\s*%/g,                           // Percentages
-  /(\d+(?:,\d{3})*(?:\.\d+)?)\s*(people|patients|cases|deaths|million|billion)/gi,
-  /(\d+)\s*(?:out of|in)\s*(\d+)/gi,                // Ratios like "1 in 10"
-  /(\d+(?:\.\d+)?)\s*times\s*(more|less|higher|lower)/gi,
-  /(\d+(?:\.\d+)?)\s*fold\s*(increase|decrease)/gi,
-  /reduces?\s*(?:risk|chance)?\s*by\s*(\d+(?:\.\d+)?)\s*%/gi,
-  /increases?\s*(?:risk|chance)?\s*by\s*(\d+(?:\.\d+)?)\s*%/gi,
+  // Percentages
+  /(\d+(?:\.\d+)?)\s*%/g,
+  /(\d+(?:\.\d+)?)\s*percent/gi,
+  
+  // Counts with units
+  /(\d+(?:,\d{3})*(?:\.\d+)?)\s*(people|patients|cases|deaths|americans|children|adults|women|men|users|participants|subjects)/gi,
+  /(\d+(?:,\d{3})*(?:\.\d+)?)\s*(million|billion|thousand|hundred)/gi,
+  /(\d+(?:,\d{3})*(?:\.\d+)?)\s*(dollars|euros|\$|€)/gi,
+  /\$(\d+(?:,\d{3})*(?:\.\d+)?)\s*(million|billion|thousand)?/gi,
+  
+  // Ratios and comparisons
+  /(\d+)\s*(?:out of|in)\s*(\d+)/gi,
+  /(\d+(?:\.\d+)?)\s*times\s*(more|less|higher|lower|greater|as likely|as much)/gi,
+  /(\d+(?:\.\d+)?)\s*-?\s*fold\s*(increase|decrease|higher|lower|more|less)?/gi,
+  
+  // Changes
+  /reduces?\s*(?:risk|chance|likelihood)?\s*by\s*(\d+(?:\.\d+)?)/gi,
+  /increases?\s*(?:risk|chance|likelihood)?\s*by\s*(\d+(?:\.\d+)?)/gi,
+  /(doubled|tripled|quadrupled|halved)/gi,
+  /rose\s*(?:by\s*)?(\d+(?:\.\d+)?)/gi,
+  /fell\s*(?:by\s*)?(\d+(?:\.\d+)?)/gi,
+  /grew\s*(?:by\s*)?(\d+(?:\.\d+)?)/gi,
+  /dropped\s*(?:by\s*)?(\d+(?:\.\d+)?)/gi,
+  
+  // Time periods
+  /(\d+)\s*(year|month|week|day|hour)s?\s*(ago|later|earlier)/gi,
+  /since\s*(\d{4})/gi,
+  /between\s*(\d{4})\s*and\s*(\d{4})/gi,
+  
+  // Rankings and positions
+  /(first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s*(largest|smallest|biggest|highest|lowest|most|least)/gi,
+  /ranked?\s*#?\s*(\d+)/gi,
+  /top\s*(\d+)/gi,
+];
+
+// Patterns that indicate factual claims (even without numbers)
+const CLAIM_TRIGGER_PATTERNS = [
+  // Research/study claims
+  /stud(?:y|ies)\s+(?:show|found|suggest|reveal|indicate|demonstrate|confirm)/gi,
+  /research\s+(?:show|found|suggest|reveal|indicate|demonstrate|confirm)/gi,
+  /scientists?\s+(?:found|discovered|say|claim|believe|confirmed)/gi,
+  /researchers?\s+(?:found|discovered|say|claim|believe|confirmed)/gi,
+  /experts?\s+(?:say|warn|believe|agree|recommend|advise)/gi,
+  /doctors?\s+(?:say|warn|believe|agree|recommend|advise)/gi,
+  /according\s+to\s+(?:a\s+)?(?:new\s+)?(?:study|research|data|report|survey|poll|analysis)/gi,
+  /data\s+(?:show|suggest|indicate|reveal)/gi,
+  
+  // Definitive claims
+  /(?:is|are|was|were)\s+(?:proven|shown|confirmed|linked|associated|connected)\s+to/gi,
+  /has\s+been\s+(?:proven|shown|confirmed|linked|associated|connected)/gi,
+  /causes?\s+(?:cancer|disease|death|illness|damage|harm)/gi,
+  /prevents?\s+(?:cancer|disease|death|illness|damage|harm)/gi,
+  /cures?\s+(?:cancer|disease|illness)/gi,
+  
+  // Comparative claims  
+  /more\s+(?:effective|dangerous|harmful|beneficial|likely)\s+than/gi,
+  /less\s+(?:effective|dangerous|harmful|beneficial|likely)\s+than/gi,
+  /the\s+(?:most|least|best|worst|safest|deadliest)/gi,
+  
+  // Certainty language
+  /always|never|every|all|none|no\s+one/gi,
+  /definitely|certainly|absolutely|undoubtedly/gi,
+  /proven\s+(?:to|that)/gi,
+  /fact\s+(?:is|that)/gi,
 ];
 
 // Quote detection patterns
 const QUOTE_PATTERNS = [
-  /"([^"]{20,300})"\s*(?:said|says|according to|stated)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
-  /(?:said|says|according to|stated)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)[,:]?\s*"([^"]{20,300})"/g,
+  /"([^"]{20,300})"\s*(?:said|says|according to|stated|wrote|claimed|argued)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/g,
+  /(?:said|says|according to|stated|wrote|claimed|argued)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)[,:]?\s*"([^"]{20,300})"/g,
 ];
 
 let claimCounter = 0;
@@ -141,30 +179,25 @@ function findClaimBoundary(text: string, matchStart: number, matchEnd: number): 
 
 let matchCount = 0; // Debug counter
 
-function detectStatisticClaims(textNode: Text, claims: DetectedClaim[]): void {
+function detectPatternClaims(textNode: Text, claims: DetectedClaim[], patterns: RegExp[], claimType: ClaimType): void {
   const text = textNode.textContent || '';
   
-  for (const pattern of STATISTIC_PATTERNS) {
+  for (const pattern of patterns) {
     // Reset lastIndex for global patterns
     pattern.lastIndex = 0;
     
     let match;
     while ((match = pattern.exec(text)) !== null) {
       matchCount++;
-      console.log(`[LieDetector] Pattern match #${matchCount}:`, match[0], 'in:', text.substring(0, 50));
       
-      // Check if this text contains health-related keywords
       const boundary = findClaimBoundary(text, match.index, match.index + match[0].length);
       const sentenceText = text.slice(boundary.start, boundary.end).trim();
       
-      // TODO: Re-enable health keyword check when expanding beyond MVP testing
-      // const hasHealthContext = HEALTH_KEYWORDS.some(keyword => 
-      //   sentenceText.toLowerCase().includes(keyword.toLowerCase())
-      // );
-      // if (!hasHealthContext) continue;
-      
       // Skip if too short
       if (sentenceText.length < 20) continue;
+      
+      // Skip if too long (probably grabbed too much)
+      if (sentenceText.length > 500) continue;
       
       try {
         const range = document.createRange();
@@ -175,7 +208,7 @@ function detectStatisticClaims(textNode: Text, claims: DetectedClaim[]): void {
           id: generateClaimId(),
           text: sentenceText,
           normalizedText: sentenceText.toLowerCase().trim(),
-          claimType: 'statistic',
+          claimType: claimType,
           entities: extractEntities(sentenceText),
           extractedFrom: {
             url: window.location.href,
@@ -268,7 +301,11 @@ export function detectClaims(root: Element = document.body): DetectedClaim[] {
   }
   
   for (const textNode of textNodes) {
-    detectStatisticClaims(textNode, claims);
+    // Detect statistics (numbers, percentages, etc.)
+    detectPatternClaims(textNode, claims, STATISTIC_PATTERNS, 'statistic');
+    
+    // Detect claim trigger phrases (studies show, experts say, etc.)
+    detectPatternClaims(textNode, claims, CLAIM_TRIGGER_PATTERNS, 'event');
   }
   
   // Deduplicate overlapping claims (keep the more specific one)

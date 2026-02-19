@@ -94,13 +94,19 @@ export function highlightClaim(
 ): HighlightedClaim | null {
   const { claim, element } = detectedClaim;
   
-  // Don't re-highlight already highlighted claims
+  // Check if already highlighted and element still exists
   if (highlightedClaims.has(claim.id)) {
-    // But update verification if provided
-    if (verification) {
-      updateVerification(claim.id, verification);
+    const existing = highlightedClaims.get(claim.id)!;
+    // Check if the element is still in the DOM
+    if (document.contains(existing.highlightElement)) {
+      if (verification) {
+        updateVerification(claim.id, verification);
+      }
+      return existing;
+    } else {
+      // Element was removed (re-render), remove from tracking
+      highlightedClaims.delete(claim.id);
     }
-    return highlightedClaims.get(claim.id)!;
   }
   
   try {
@@ -108,11 +114,17 @@ export function highlightClaim(
     // mark the parent element directly
     const targetElement = element;
     
+    // Check if element still exists and isn't already highlighted
+    if (!document.contains(targetElement)) {
+      console.log('[LieDetector] Element no longer in DOM, skipping');
+      return null;
+    }
+    
     // Add our highlight class and data attributes to the parent element
     targetElement.classList.add(HIGHLIGHT_CLASS);
     targetElement.dataset.claimId = claim.id;
     
-    // Default to unverified styling
+    // Get verification from tracking if available
     const rating = verification?.rating || 'unverified';
     const color = RATING_COLORS[rating];
     const style = rating === 'unverified' ? 'dotted' : 'solid';

@@ -10,12 +10,15 @@ import {
   ExtensionSettings, 
   DEFAULT_SETTINGS, 
   ClaimVerifiedMessage,
-  DetectedClaim 
+  DetectedClaim,
+  Verification
 } from '@/types';
 
 let settings: ExtensionSettings = DEFAULT_SETTINGS;
 let isInitialized = false;
 let detectedClaims: DetectedClaim[] = [];
+// Store verifications so we can re-apply them after re-render
+const verificationCache = new Map<string, Verification>();
 
 // Throttle function for scroll/resize handlers
 function throttle<T extends (...args: unknown[]) => void>(
@@ -123,6 +126,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   switch (message.type) {
     case 'CLAIM_VERIFIED': {
       const { claimId, verification } = (message as ClaimVerifiedMessage).payload;
+      // Cache for re-application on re-render
+      verificationCache.set(claimId, verification);
       updateVerification(claimId, verification);
       return false;
     }
@@ -174,19 +179,56 @@ async function initialize(): Promise<void> {
     scanPage();
   }, 1000);
   
-  // Re-scan on significant DOM changes (for SPAs)
+  // Re-apply highlights on DOM changes (for SPAs and virtual scrolling)
   const observer = new MutationObserver(
     throttle(() => {
-      // Only rescan if there were significant additions
-      // This is a simple heuristic - could be improved
-      console.log('[LieDetector] DOM changed, considering rescan...');
-    }, 5000)
+      console.log('[LieDetector] DOM changed, re-applying highlights...');
+      reapplyHighlights();
+    }, 500)
   );
   
   observer.observe(document.body, {
     childList: true,
     subtree: true,
   });
+}
+
+// Re-apply highlights to elements that match our detected claim texts
+function reapplyHighlights(): void {
+  if (detectedClaims.length === 0) return;
+  
+  for (const detected of detectedClaims) {
+    // Check if current element is still valid and highlighted
+    if (document.contains(detected.element) && 
+        detected.element.classList.contains('LieDetector-highlight')) {
+      continue; // Already highlighted and in DOM
+    }
+    
+    // Find elements containing this claim text
+    const searchText = detected.claim.text.substring(0, 30); // Use first 30 chars for matching
+    
+    // Use TreeWalker to find text nodes
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+    
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.textContent && node.textContent.includes(searchText)) {
+        const parent = node.parentElement;
+        if (parent && !parent.classList.contains('LieDetector-highlight')) {
+          // Update the element reference
+          detected.element = parent;
+          // Get cached verification if available
+          const cachedVerification = verificationCache.get(detected.claim.id);
+          highlightClaim(detected, cachedVerification);
+          break; // Found and highlighted, move to next claim
+        }
+      }
+    }
+  }
 }
 
 // Start when DOM is ready

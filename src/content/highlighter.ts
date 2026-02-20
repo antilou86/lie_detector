@@ -92,7 +92,7 @@ export function highlightClaim(
   detectedClaim: DetectedClaim, 
   verification?: Verification
 ): HighlightedClaim | null {
-  const { claim, element } = detectedClaim;
+  const { claim, element, range } = detectedClaim;
   
   // Check if already highlighted and element still exists
   if (highlightedClaims.has(claim.id)) {
@@ -110,29 +110,41 @@ export function highlightClaim(
   }
   
   try {
-    // Instead of wrapping text (which fails on dynamic pages),
-    // mark the parent element directly
-    const targetElement = element;
-    
-    // Check if element still exists and isn't already highlighted
-    if (!document.contains(targetElement)) {
+    // Check if parent element still exists
+    if (!document.contains(element)) {
       console.log('[LieDetector] Element no longer in DOM, skipping');
       return null;
     }
     
-    // Add our highlight class and data attributes to the parent element
-    targetElement.classList.add(HIGHLIGHT_CLASS);
-    targetElement.dataset.claimId = claim.id;
+    // Create a span to wrap just the claim text
+    const wrapper = document.createElement('span');
+    wrapper.className = HIGHLIGHT_CLASS;
+    wrapper.dataset.claimId = claim.id;
     
     // Get verification from tracking if available
     const rating = verification?.rating || 'unverified';
     const color = RATING_COLORS[rating];
     const style = rating === 'unverified' ? 'dotted' : 'solid';
     
-    // Apply inline styles with !important to override page styles
-    targetElement.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
-    targetElement.style.setProperty('background-color', `${color}22`, 'important');
-    targetElement.setAttribute('data-rating', rating);
+    // Apply inline styles to the wrapper span
+    wrapper.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
+    wrapper.style.setProperty('background-color', `${color}22`, 'important');
+    wrapper.style.setProperty('padding', '2px 0', 'important');
+    wrapper.setAttribute('data-rating', rating);
+    
+    // Try to wrap the range contents with our span
+    try {
+      range.surroundContents(wrapper);
+    } catch (e) {
+      // surroundContents can fail if range spans multiple elements
+      // Fall back to extracting and inserting
+      console.debug('[LieDetector] surroundContents failed, using extractContents fallback');
+      const contents = range.extractContents();
+      wrapper.appendChild(contents);
+      range.insertNode(wrapper);
+    }
+    
+    const targetElement = wrapper;
     
     // Setup tooltip interactions
     let tooltip: HTMLElement | null = null;

@@ -26,6 +26,90 @@ interface TrackedClaim {
 
 const trackedClaims = new Map<string, TrackedClaim>();
 
+// Global tooltip management - only one tooltip visible at a time
+let activeTooltip: HTMLElement | null = null;
+let activeTooltipClaimId: string | null = null;
+let tooltipHideTimeout: number | null = null;
+
+function hideActiveTooltip(): void {
+  if (tooltipHideTimeout) {
+    clearTimeout(tooltipHideTimeout);
+    tooltipHideTimeout = null;
+  }
+  if (activeTooltip) {
+    activeTooltip.remove();
+    activeTooltip = null;
+    activeTooltipClaimId = null;
+  }
+}
+
+function hideActiveTooltipDelayed(): void {
+  if (tooltipHideTimeout) {
+    clearTimeout(tooltipHideTimeout);
+  }
+  tooltipHideTimeout = window.setTimeout(() => {
+    hideActiveTooltip();
+  }, 300);
+}
+
+function cancelTooltipHide(): void {
+  if (tooltipHideTimeout) {
+    clearTimeout(tooltipHideTimeout);
+    tooltipHideTimeout = null;
+  }
+}
+
+function showTooltipForClaim(claimId: string): void {
+  cancelTooltipHide();
+  
+  const tracked = trackedClaims.get(claimId);
+  if (!tracked?.verification) return;
+  
+  // If same tooltip is already showing, just cancel hide
+  if (activeTooltipClaimId === claimId && activeTooltip && document.body.contains(activeTooltip)) {
+    return;
+  }
+  
+  // Remove any existing tooltip
+  hideActiveTooltip();
+  
+  // Create new tooltip
+  activeTooltip = createTooltip(tracked.verification);
+  activeTooltip.setAttribute('data-claim-id', claimId);
+  activeTooltipClaimId = claimId;
+  document.body.appendChild(activeTooltip);
+  
+  // Position tooltip near the first overlay
+  if (tracked.overlayElements.length > 0) {
+    const firstOverlay = tracked.overlayElements[0];
+    const rect = firstOverlay.getBoundingClientRect();
+    
+    let top = rect.bottom + window.scrollY + 8;
+    let left = rect.left + window.scrollX;
+    
+    // Reposition after getting tooltip dimensions
+    requestAnimationFrame(() => {
+      if (!activeTooltip) return;
+      const tooltipRect = activeTooltip.getBoundingClientRect();
+      
+      if (left + tooltipRect.width > window.innerWidth) {
+        left = window.innerWidth - tooltipRect.width - 16;
+      }
+      if (top + tooltipRect.height > window.scrollY + window.innerHeight) {
+        top = rect.top + window.scrollY - tooltipRect.height - 8;
+      }
+      
+      activeTooltip.style.top = `${top}px`;
+      activeTooltip.style.left = `${Math.max(8, left)}px`;
+      activeTooltip.classList.add('visible');
+    });
+  }
+  
+  // Allow hovering over tooltip
+  activeTooltip.addEventListener('mouseenter', cancelTooltipHide);
+  activeTooltip.addEventListener('mouseleave', hideActiveTooltipDelayed);
+}
+
 // Create or get the overlay container
 function getOverlayContainer(): HTMLElement {
   let container = document.getElementById(OVERLAY_CONTAINER_ID);
@@ -140,9 +224,7 @@ function findTextRects(searchText: string): DOMRect[] {
 function createOverlays(
   claimId: string,
   rects: DOMRect[], 
-  rating: Rating,
-  onHover: () => void,
-  onLeave: () => void
+  rating: Rating
 ): HTMLElement[] {
   const container = getOverlayContainer();
   const color = RATING_COLORS[rating];
@@ -170,8 +252,9 @@ function createOverlays(
       box-sizing: border-box;
     `;
     
-    overlay.addEventListener('mouseenter', onHover);
-    overlay.addEventListener('mouseleave', onLeave);
+    // Use global tooltip management
+    overlay.addEventListener('mouseenter', () => showTooltipForClaim(claimId));
+    overlay.addEventListener('mouseleave', hideActiveTooltipDelayed);
     
     container.appendChild(overlay);
     overlays.push(overlay);
@@ -217,61 +300,7 @@ export function highlightClaim(
     return null;
   }
   
-  // Tooltip state
-  let tooltip: HTMLElement | null = null;
-  let hideTimeout: number | null = null;
-  
-  const showTooltip = () => {
-    if (hideTimeout) {
-      clearTimeout(hideTimeout);
-      hideTimeout = null;
-    }
-    
-    const tracked = trackedClaims.get(claim.id);
-    if (!tracked?.verification) return;
-    
-    if (!tooltip || !document.body.contains(tooltip)) {
-      tooltip = createTooltip(tracked.verification);
-      tooltip.setAttribute('data-claim-id', claim.id);
-      tooltip.style.pointerEvents = 'auto';
-      document.body.appendChild(tooltip);
-      
-      // Position tooltip near the first overlay
-      if (tracked.overlayElements.length > 0) {
-        const firstOverlay = tracked.overlayElements[0];
-        const rect = firstOverlay.getBoundingClientRect();
-        const tooltipRect = tooltip.getBoundingClientRect();
-        
-        let top = rect.bottom + window.scrollY + 8;
-        let left = rect.left + window.scrollX;
-        
-        if (left + tooltipRect.width > window.innerWidth) {
-          left = window.innerWidth - tooltipRect.width - 16;
-        }
-        if (top + tooltipRect.height > window.scrollY + window.innerHeight) {
-          top = rect.top + window.scrollY - tooltipRect.height - 8;
-        }
-        
-        tooltip.style.top = `${top}px`;
-        tooltip.style.left = `${Math.max(8, left)}px`;
-      }
-      
-      tooltip.addEventListener('mouseenter', showTooltip);
-      tooltip.addEventListener('mouseleave', hideTooltipDelayed);
-    }
-    
-    tooltip.classList.add('visible');
-  };
-  
-  const hideTooltipDelayed = () => {
-    hideTimeout = window.setTimeout(() => {
-      if (tooltip) {
-        tooltip.classList.remove('visible');
-      }
-    }, 200);
-  };
-  
-  const overlays = createOverlays(claim.id, rects, rating, showTooltip, hideTooltipDelayed);
+  const overlays = createOverlays(claim.id, rects, rating);
   
   if (overlays.length === 0) {
     return null;
@@ -294,7 +323,6 @@ export function highlightClaim(
     verification,
   };
 }
-
 export function updateVerification(claimId: string, verification: Verification): void {
   const tracked = trackedClaims.get(claimId);
   if (!tracked) {
@@ -316,10 +344,9 @@ export function updateVerification(claimId: string, verification: Verification):
     overlay.dataset.rating = rating;
   }
   
-  // Remove old tooltip (will be recreated on next hover)
-  const existingTooltip = document.querySelector(`.${TOOLTIP_CLASS}[data-claim-id="${claimId}"]`);
-  if (existingTooltip) {
-    existingTooltip.remove();
+  // Hide tooltip if it's for this claim (will be recreated with new data on next hover)
+  if (activeTooltipClaimId === claimId) {
+    hideActiveTooltip();
   }
 }
 
@@ -327,6 +354,9 @@ export function updateVerification(claimId: string, verification: Verification):
  * Refresh all overlay positions by re-finding text in DOM
  */
 export function refreshOverlayPositions(): void {
+  // Hide any active tooltip during refresh
+  hideActiveTooltip();
+  
   for (const [claimId, tracked] of trackedClaims) {
     // Remove old overlays
     removeOverlays(tracked.overlayElements);
@@ -336,65 +366,12 @@ export function refreshOverlayPositions(): void {
     
     if (rects.length === 0) {
       console.debug('[LieDetector] Could not re-find text for claim:', tracked.claimText.substring(0, 30));
+      tracked.overlayElements = [];
       continue;
     }
     
     const rating = tracked.verification?.rating || 'unverified';
-    
-    // Tooltip handlers (recreate)
-    let tooltip: HTMLElement | null = null;
-    let hideTimeout: number | null = null;
-    
-    const showTooltip = () => {
-      if (hideTimeout) {
-        clearTimeout(hideTimeout);
-        hideTimeout = null;
-      }
-      
-      const t = trackedClaims.get(claimId);
-      if (!t?.verification) return;
-      
-      if (!tooltip || !document.body.contains(tooltip)) {
-        tooltip = createTooltip(t.verification);
-        tooltip.setAttribute('data-claim-id', claimId);
-        tooltip.style.pointerEvents = 'auto';
-        document.body.appendChild(tooltip);
-        
-        if (t.overlayElements.length > 0) {
-          const firstOverlay = t.overlayElements[0];
-          const rect = firstOverlay.getBoundingClientRect();
-          const tooltipRect = tooltip.getBoundingClientRect();
-          
-          let top = rect.bottom + window.scrollY + 8;
-          let left = rect.left + window.scrollX;
-          
-          if (left + tooltipRect.width > window.innerWidth) {
-            left = window.innerWidth - tooltipRect.width - 16;
-          }
-          if (top + tooltipRect.height > window.scrollY + window.innerHeight) {
-            top = rect.top + window.scrollY - tooltipRect.height - 8;
-          }
-          
-          tooltip.style.top = `${top}px`;
-          tooltip.style.left = `${Math.max(8, left)}px`;
-        }
-        
-        tooltip.addEventListener('mouseenter', showTooltip);
-        tooltip.addEventListener('mouseleave', hideTooltipDelayed);
-      }
-      
-      tooltip.classList.add('visible');
-    };
-    
-    const hideTooltipDelayed = () => {
-      hideTimeout = window.setTimeout(() => {
-        if (tooltip) {
-          tooltip.classList.remove('visible');
-        }
-      }, 200);
-    };
-    
-    const newOverlays = createOverlays(claimId, rects, rating, showTooltip, hideTooltipDelayed);
+    const newOverlays = createOverlays(claimId, rects, rating);
     tracked.overlayElements = newOverlays;
   }
   
@@ -407,19 +384,25 @@ export function removeHighlight(claimId: string): void {
   
   removeOverlays(tracked.overlayElements);
   
-  // Remove tooltip if exists
-  const tooltip = document.querySelector(`.${TOOLTIP_CLASS}[data-claim-id="${claimId}"]`);
-  if (tooltip) {
-    tooltip.remove();
+  // Hide tooltip if it belongs to this claim
+  if (activeTooltipClaimId === claimId) {
+    hideActiveTooltip();
   }
   
   trackedClaims.delete(claimId);
 }
 
 export function removeAllHighlights(): void {
+  // Hide any active tooltip first
+  hideActiveTooltip();
+  
   for (const claimId of trackedClaims.keys()) {
-    removeHighlight(claimId);
+    const tracked = trackedClaims.get(claimId);
+    if (tracked) {
+      removeOverlays(tracked.overlayElements);
+    }
   }
+  trackedClaims.clear();
   
   // Also remove the container
   const container = document.getElementById(OVERLAY_CONTAINER_ID);

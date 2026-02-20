@@ -122,6 +122,7 @@ export interface ExtensionSettings {
   enabledDomains: string[];
   disabledDomains: string[];
   minConfidenceToShow: number;
+  useNlpExtraction: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -131,6 +132,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   enabledDomains: [],
   disabledDomains: [],
   minConfidenceToShow: 0.3,
+  useNlpExtraction: true,
 };
 
 // Message types for extension communication
@@ -140,7 +142,9 @@ export type MessageType =
   | 'GET_SETTINGS'
   | 'UPDATE_SETTINGS'
   | 'CLAIM_VERIFIED'
-  | 'PAGE_SCANNED';
+  | 'PAGE_SCANNED'
+  | 'EXTRACT_AND_VERIFY'
+  | 'NLP_CLAIMS_DETECTED';
 
 export interface ExtensionMessage {
   type: MessageType;
@@ -160,6 +164,34 @@ export interface VerifySelectionMessage extends ExtensionMessage {
   payload: {
     text: string;
     url: string;
+    claimId?: string;
+  };
+}
+
+export interface ExtractAndVerifyMessage extends ExtensionMessage {
+  type: 'EXTRACT_AND_VERIFY';
+  payload: {
+    text: string;
+    url: string;
+    maxClaims?: number;
+  };
+}
+
+export interface NlpClaimsDetectedMessage extends ExtensionMessage {
+  type: 'NLP_CLAIMS_DETECTED';
+  payload: {
+    claims: Array<{
+      id: string;
+      text: string;
+      claimType: string;
+      confidence: number;
+      charStart: number;
+      charEnd: number;
+    }>;
+    verifications: Array<{
+      claimId: string;
+      verification: Verification;
+    }>;
   };
 }
 

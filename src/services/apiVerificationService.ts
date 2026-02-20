@@ -147,11 +147,117 @@ export async function verifyClaimApi(
 }
 
 /**
+ * NLP-extracted claim with additional metadata
+ */
+export interface NlpClaimDetails {
+  text: string;
+  claimType: string;
+  confidence: number;
+  entities: Array<{ text: string; label: string }>;
+  keywords: string[];
+  charStart: number;
+  charEnd: number;
+}
+
+interface ApiExtractAndVerifyResponse {
+  claims: Array<{
+    id: string;
+    text: string;
+    context?: string;
+    sourceUrl?: string;
+  }>;
+  verifications: ApiVerification[];
+  meta: {
+    total: number;
+    fromCache: number;
+    source: 'nlp' | 'fallback';
+    nlpDetails?: NlpClaimDetails[];
+    error?: string;
+  };
+}
+
+/**
+ * Extract claims using NLP and verify them in one call
+ */
+export async function extractAndVerifyApi(
+  text: string,
+  url?: string,
+  maxClaims: number = 20
+): Promise<{
+  claims: Claim[];
+  verifications: Map<string, Verification>;
+  nlpDetails?: NlpClaimDetails[];
+  source: 'nlp' | 'fallback';
+}> {
+  const verifications = new Map<string, Verification>();
+  
+  try {
+    const response = await fetch(`${BACKEND_URL}/api/extract-and-verify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        url,
+        maxClaims,
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Backend responded with ${response.status}`);
+    }
+    
+    const data: ApiExtractAndVerifyResponse = await response.json();
+    
+    // Convert claims to extension format with all required fields
+    const claims: Claim[] = data.claims.map((c, i) => ({
+      id: c.id,
+      text: c.text,
+      normalizedText: c.text.toLowerCase(),
+      claimType: (data.meta.nlpDetails?.[i]?.claimType as Claim['claimType']) || 'statistic',
+      entities: [],
+      extractedFrom: {
+        url: url || '',
+        domain: url ? new URL(url).hostname : '',
+        timestamp: new Date(),
+      },
+    }));
+    
+    // Map verifications
+    for (const apiVerification of data.verifications) {
+      verifications.set(apiVerification.claimId, toVerification(apiVerification));
+    }
+    
+    console.log(
+      `[ApiVerificationService] NLP extracted ${claims.length} claims, ` +
+      `${data.meta.fromCache} from cache, source: ${data.meta.source}`
+    );
+    
+    return {
+      claims,
+      verifications,
+      nlpDetails: data.meta.nlpDetails,
+      source: data.meta.source,
+    };
+    
+  } catch (error) {
+    console.error('[ApiVerificationService] Extract-and-verify failed:', error);
+    
+    return {
+      claims: [],
+      verifications,
+      source: 'fallback',
+    };
+  }
+}
+
+/**
  * Check if the backend is available
  */
 export async function checkBackendHealth(): Promise<{
   available: boolean;
-  services: { googleFactCheck: boolean };
+  services: { googleFactCheck: boolean; nlpService: boolean; llmVerification: boolean };
 }> {
   try {
     const response = await fetch(`${BACKEND_URL}/api/health`, {
@@ -160,15 +266,25 @@ export async function checkBackendHealth(): Promise<{
     } as RequestInit);
     
     if (!response.ok) {
-      return { available: false, services: { googleFactCheck: false } };
+      return { 
+        available: false, 
+        services: { googleFactCheck: false, nlpService: false, llmVerification: false } 
+      };
     }
     
     const data = await response.json();
     return {
       available: true,
-      services: data.services || { googleFactCheck: false },
+      services: {
+        googleFactCheck: data.services?.googleFactCheck || false,
+        nlpService: data.services?.nlpService || false,
+        llmVerification: data.services?.llmVerification || false,
+      },
     };
   } catch {
-    return { available: false, services: { googleFactCheck: false } };
+    return { 
+      available: false, 
+      services: { googleFactCheck: false, nlpService: false, llmVerification: false } 
+    };
   }
 }

@@ -12,9 +12,10 @@ import {
   ExtensionSettings, 
   DEFAULT_SETTINGS,
   VerifyClaimsMessage,
-  VerifySelectionMessage 
+  VerifySelectionMessage,
+  ExtractAndVerifyMessage 
 } from '@/types';
-import { verifyClaimsApi, verifyClaimApi, checkBackendHealth } from '@/services/apiVerificationService';
+import { verifyClaimsApi, verifyClaimApi, extractAndVerifyApi, checkBackendHealth } from '@/services/apiVerificationService';
 
 // Initialize context menu
 chrome.runtime.onInstalled.addListener(() => {
@@ -36,14 +37,20 @@ chrome.runtime.onInstalled.addListener(() => {
 
 // Handle context menu clicks
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'LieDetector-verify' && tab?.id) {
+  if (info.menuItemId === 'LieDetector-verify' && tab?.id && info.selectionText) {
+    const claimId = `selection_${Date.now()}`;
+    
+    // First tell content script to highlight the selection
     chrome.tabs.sendMessage(tab.id, {
       type: 'VERIFY_SELECTION',
       payload: {
         text: info.selectionText,
-        url: tab.url,
+        claimId: claimId,
       },
     });
+    
+    // Then verify it via backend
+    handleVerifySelection(info.selectionText, tab.url || '', tab.id, claimId);
   }
 });
 
@@ -59,8 +66,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     
     case 'VERIFY_SELECTION': {
-      const { text, url } = (message as VerifySelectionMessage).payload;
-      handleVerifySelection(text, url, tabId);
+      const { text, url, claimId } = (message as VerifySelectionMessage).payload;
+      handleVerifySelection(text, url, tabId, claimId);
+      break;
+    }
+    
+    case 'EXTRACT_AND_VERIFY': {
+      const { text, url, maxClaims } = (message as ExtractAndVerifyMessage).payload;
+      handleExtractAndVerify(text, url, tabId, maxClaims);
       break;
     }
     
@@ -144,9 +157,11 @@ async function handleVerifyClaims(claims: Claim[], tabId?: number, url?: string)
   }
 }
 
-async function handleVerifySelection(text: string, url: string, tabId?: number): Promise<void> {
+async function handleVerifySelection(text: string, url: string, tabId?: number, claimId?: string): Promise<void> {
+  const id = claimId || `selection_${Date.now()}`;
+  
   const claim: Claim = {
-    id: `selection_${Date.now()}`,
+    id: id,
     text: text,
     normalizedText: text.toLowerCase().trim(),
     claimType: 'statistic',
@@ -172,6 +187,72 @@ async function handleVerifySelection(text: string, url: string, tabId?: number):
     }
   } catch (error) {
     console.error('[LieDetector] Selection verification failed:', error);
+  }
+}
+
+/**
+ * Handle NLP-based extraction and verification
+ * Sends text to backend, which uses spaCy to extract claims and verify them
+ */
+async function handleExtractAndVerify(
+  text: string, 
+  url: string, 
+  tabId?: number, 
+  maxClaims: number = 20
+): Promise<void> {
+  console.log(`[LieDetector] NLP extraction for ${text.length} chars from ${url}`);
+  
+  try {
+    const { claims, verifications, nlpDetails, source } = await extractAndVerifyApi(text, url, maxClaims);
+    
+    if (claims.length === 0) {
+      console.log(`[LieDetector] No claims extracted (source: ${source})`);
+      return;
+    }
+    
+    console.log(`[LieDetector] NLP extracted ${claims.length} claims (source: ${source})`);
+    
+    // Send all detected claims with their NLP details and verifications to content script
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, {
+        type: 'NLP_CLAIMS_DETECTED',
+        payload: {
+          claims: claims.map((claim, i) => ({
+            id: claim.id,
+            text: claim.text,
+            claimType: nlpDetails?.[i]?.claimType || 'general',
+            confidence: nlpDetails?.[i]?.confidence || 0.5,
+            charStart: nlpDetails?.[i]?.charStart ?? -1,
+            charEnd: nlpDetails?.[i]?.charEnd ?? -1,
+          })),
+          verifications: claims.map(claim => ({
+            claimId: claim.id,
+            verification: verifications.get(claim.id)!,
+          })).filter(v => v.verification),
+        },
+      }).catch(err => {
+        console.debug('[LieDetector] Failed to send NLP claims:', err);
+      });
+      
+      // Update badge
+      updateBadge(claims.length, tabId);
+      
+      // Check for problematic claims and update badge color
+      const ratings = Array.from(verifications.values()).map(v => v.rating);
+      const hasIssues = ratings.some(r => 
+        ['mostly_false', 'false', 'outdated'].includes(r)
+      );
+      
+      if (hasIssues) {
+        chrome.action.setBadgeBackgroundColor({ 
+          color: '#ef4444', 
+          tabId 
+        });
+      }
+    }
+    
+  } catch (error) {
+    console.error('[LieDetector] NLP extraction failed:', error);
   }
 }
 

@@ -260,17 +260,34 @@ function extractEntities(text: string): Entity[] {
 }
 
 function findClaimBoundary(text: string, matchStart: number, matchEnd: number): { start: number; end: number } {
-  // Expand to sentence boundaries
+  // Maximum characters to expand in each direction
+  const MAX_EXPAND_BACK = 150;
+  const MAX_EXPAND_FORWARD = 200;
+  
   let start = matchStart;
   let end = matchEnd;
   
-  // Find sentence start (look for . ! ? or start of text)
-  while (start > 0 && !/[.!?\n]/.test(text[start - 1])) {
+  // Find sentence start (look for . ! ? or newline, but don't go too far)
+  const minStart = Math.max(0, matchStart - MAX_EXPAND_BACK);
+  while (start > minStart && !/[.!?\n]/.test(text[start - 1])) {
     start--;
   }
   
-  // Find sentence end
-  while (end < text.length && !/[.!?\n]/.test(text[end])) {
+  // If we hit the limit without finding a boundary, look for the nearest capital letter start
+  if (start === minStart && start > 0) {
+    // Search forward for a capital letter that starts a sentence
+    let capitalStart = start;
+    while (capitalStart < matchStart && !/[A-Z]/.test(text[capitalStart])) {
+      capitalStart++;
+    }
+    if (capitalStart < matchStart) {
+      start = capitalStart;
+    }
+  }
+  
+  // Find sentence end (but don't go too far)
+  const maxEnd = Math.min(text.length, matchEnd + MAX_EXPAND_FORWARD);
+  while (end < maxEnd && !/[.!?\n]/.test(text[end])) {
     end++;
   }
   

@@ -5,7 +5,7 @@
  */
 
 import { detectClaims, detectClaimsInSelection } from './claimDetector';
-import { highlightClaim, updateVerification, removeAllHighlights, refreshOverlayPositions } from './highlighter';
+import { highlightClaim, updateVerification, removeAllHighlights, refreshOverlayPositions, registerClaimWithoutHighlight, OVERLAY_CONTAINER_ID } from './highlighter';
 import { 
   ExtensionSettings, 
   DEFAULT_SETTINGS, 
@@ -21,6 +21,28 @@ let isInitialized = false;
 let detectedClaims: DetectedClaim[] = [];
 // Store verifications so we can re-apply them after re-render
 const verificationCache = new Map<string, Verification>();
+
+// Cache the last selection so we can use it even after context menu clears it
+let lastSelectionCache: { text: string; range: Range | null; timestamp: number } | null = null;
+
+// Listen for selection changes and cache them
+document.addEventListener('selectionchange', () => {
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed) {
+    const text = selection.toString().trim();
+    if (text.length >= 10) {
+      try {
+        lastSelectionCache = {
+          text,
+          range: selection.getRangeAt(0).cloneRange(),
+          timestamp: Date.now(),
+        };
+      } catch (e) {
+        // Range might be invalid
+      }
+    }
+  }
+});
 
 // Throttle function for scroll/resize handlers
 function throttle<T extends (...args: unknown[]) => void>(
@@ -267,7 +289,11 @@ function findClaimInDom(claim: { id: string; text: string; claimType: string; co
   return null;
 }
 
-function handleSelectionVerify(): void {
+/**
+ * Handle manual text selection verification
+ * @param existingClaimId If provided, use this ID (from background context menu) and don't send verification request
+ */
+function handleSelectionVerify(existingClaimId?: string): void {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed) return;
   
@@ -277,8 +303,8 @@ function handleSelectionVerify(): void {
     return;
   }
   
-  // Create a claim from the selection directly (don't require pattern matching)
-  const claimId = `selection_${Date.now()}`;
+  // Use provided ID or generate new one
+  const claimId = existingClaimId || `selection_${Date.now()}`;
   const claim: Claim = {
     id: claimId,
     text: text,
@@ -305,20 +331,30 @@ function handleSelectionVerify(): void {
   };
   
   // Highlight immediately (will show as "unverified" until backend responds)
-  highlightClaim(detected);
+  const highlighted = highlightClaim(detected);
   detectedClaims.push(detected);
   
-  console.log('[LieDetector] Manual selection highlighted:', text.substring(0, 50));
+  // If highlighting failed (couldn't create overlays), still register the claim
+  // so verification updates work
+  if (!highlighted) {
+    console.log('[LieDetector] Highlighting failed, registering claim without visual');
+    registerClaimWithoutHighlight(claim);
+  }
   
-  // Send to background for verification
-  chrome.runtime.sendMessage({
-    type: 'VERIFY_SELECTION',
-    payload: {
-      claimId: claimId,
-      text: text,
-      url: window.location.href,
-    },
-  });
+  console.log('[LieDetector] Manual selection processed:', text.substring(0, 50));
+  
+  // Only send verification request if we generated the claimId (not from context menu)
+  // Context menu flow: background already started verification before sending VERIFY_SELECTION
+  if (!existingClaimId) {
+    chrome.runtime.sendMessage({
+      type: 'VERIFY_SELECTION',
+      payload: {
+        claimId: claimId,
+        text: text,
+        url: window.location.href,
+      },
+    });
+  }
 }
 
 /**
@@ -326,17 +362,61 @@ function handleSelectionVerify(): void {
  */
 function handleVerifySelectionFromBackground(text: string, claimId?: string): void {
   const selection = window.getSelection();
+  const trimmedText = text.trim();
   
   // Try to use current selection if it matches
-  if (selection && !selection.isCollapsed && selection.toString().trim() === text.trim()) {
+  if (selection && !selection.isCollapsed && selection.toString().trim() === trimmedText) {
     // Use the existing selection - better for highlighting
-    handleSelectionVerify();
+    // Pass the claimId so it matches what background is verifying
+    handleSelectionVerify(claimId);
     return;
   }
   
-  // Otherwise, search for the text in the document
-  const trimmedText = text.trim();
+  // Try to use cached selection if it matches and is recent (within 10 seconds)
+  if (lastSelectionCache && 
+      lastSelectionCache.text === trimmedText &&
+      lastSelectionCache.range &&
+      Date.now() - lastSelectionCache.timestamp < 10000) {
+    console.log('[LieDetector] Using cached selection range for highlighting');
+    
+    const id = claimId || `selection_${Date.now()}`;
+    const claim: Claim = {
+      id: id,
+      text: trimmedText,
+      normalizedText: trimmedText.toLowerCase(),
+      claimType: 'statistic',
+      entities: [],
+      extractedFrom: {
+        url: window.location.href,
+        domain: window.location.hostname,
+        timestamp: new Date(),
+      },
+    };
+    
+    const detected: DetectedClaim = {
+      claim,
+      element: lastSelectionCache.range.commonAncestorContainer.parentElement || document.body,
+      range: lastSelectionCache.range,
+    };
+    
+    const highlighted = highlightClaim(detected);
+    detectedClaims.push(detected);
+    
+    if (!highlighted) {
+      console.log('[LieDetector] Cached selection highlight failed, registering without visual');
+      registerClaimWithoutHighlight(claim);
+    } else {
+      console.log('[LieDetector] Cached selection highlighted:', trimmedText.substring(0, 50));
+    }
+    return;
+  }
+  
+  // Fallback: search for the text in the document
   if (trimmedText.length < 10) return;
+  
+  // For long texts, use just the first 30 chars for initial search
+  // (text may span multiple DOM nodes)
+  const searchPrefix = trimmedText.substring(0, 30);
   
   // Find the text in the DOM
   const walker = document.createTreeWalker(
@@ -345,53 +425,86 @@ function handleVerifySelectionFromBackground(text: string, claimId?: string): vo
     null
   );
   
+  let foundNode = null;
+  let foundIndex = -1;
   let node;
+  
   while ((node = walker.nextNode())) {
     const textContent = node.textContent || '';
-    const index = textContent.indexOf(trimmedText.substring(0, 50));
+    const index = textContent.indexOf(searchPrefix);
     
     if (index !== -1) {
-      try {
-        const range = document.createRange();
-        const endOffset = Math.min(index + trimmedText.length, textContent.length);
-        range.setStart(node, index);
-        range.setEnd(node, endOffset);
-        
-        const element = node.parentElement;
-        if (!element) continue;
-        
-        const id = claimId || `selection_${Date.now()}`;
-        const claim: Claim = {
-          id: id,
-          text: trimmedText,
-          normalizedText: trimmedText.toLowerCase(),
-          claimType: 'statistic',
-          entities: [],
-          extractedFrom: {
-            url: window.location.href,
-            domain: window.location.hostname,
-            timestamp: new Date(),
-          },
-        };
-        
+      foundNode = node;
+      foundIndex = index;
+      break;
+    }
+  }
+  
+  const id = claimId || `selection_${Date.now()}`;
+  const claim: Claim = {
+    id: id,
+    text: trimmedText,
+    normalizedText: trimmedText.toLowerCase(),
+    claimType: 'statistic',
+    entities: [],
+    extractedFrom: {
+      url: window.location.href,
+      domain: window.location.hostname,
+      timestamp: new Date(),
+    },
+  };
+  
+  if (foundNode && foundIndex !== -1) {
+    try {
+      const range = document.createRange();
+      const textContent = foundNode.textContent || '';
+      const endOffset = Math.min(foundIndex + trimmedText.length, textContent.length);
+      range.setStart(foundNode, foundIndex);
+      range.setEnd(foundNode, endOffset);
+      
+      const element = foundNode.parentElement;
+      if (element) {
         const detected: DetectedClaim = {
           claim,
           element,
           range,
         };
         
-        highlightClaim(detected);
+        const highlighted = highlightClaim(detected);
         detectedClaims.push(detected);
         
-        console.log('[LieDetector] Context menu selection highlighted:', trimmedText.substring(0, 50));
+        // If highlighting failed, still register for verification updates
+        if (!highlighted) {
+          console.log('[LieDetector] Context menu selection highlight failed, registering without visual');
+          registerClaimWithoutHighlight(claim);
+        } else {
+          console.log('[LieDetector] Context menu selection highlighted:', trimmedText.substring(0, 50));
+        }
         return;
-      } catch (e) {
-        console.debug('[LieDetector] Failed to create range for selection:', e);
       }
+    } catch (e) {
+      console.debug('[LieDetector] Failed to create range for selection:', e);
     }
   }
   
-  console.log('[LieDetector] Could not find selection text in DOM');
+  // Fallback: If we can't find the text in DOM (spans multiple nodes),
+  // still track the claim so verification response works
+  console.log('[LieDetector] Could not highlight text in DOM, tracking claim without visual highlight');
+  
+  // Create a minimal highlight tracking entry so updateVerification works
+  // Use body as the element since we couldn't find the exact location
+  const detected: DetectedClaim = {
+    claim,
+    element: document.body,
+    range: document.createRange(),
+  };
+  
+  // Don't call highlightClaim (no visual) but do track the claim
+  detectedClaims.push(detected);
+  
+  // Manually register in trackedClaims map for verification updates
+  // We need to import the tracking mechanism from highlighter
+  registerClaimWithoutHighlight(claim);
 }
 
 // Listen for messages from background script
@@ -467,12 +580,31 @@ async function initialize(): Promise<void> {
   
   // Refresh overlay positions on DOM changes and scroll
   // The new overlay approach doesn't modify DOM, so we just need to update positions
-  const observer = new MutationObserver(
-    throttle(() => {
+  let mutationTimeout: number | null = null;
+  const observer = new MutationObserver((mutations: MutationRecord[]) => {
+    // Ignore mutations within our overlay container to prevent infinite loops
+    const overlayContainer = document.getElementById(OVERLAY_CONTAINER_ID);
+    const hasRelevantMutation = mutations.some(mutation => {
+      // Check if the mutation target is outside our container
+      if (overlayContainer && overlayContainer.contains(mutation.target)) {
+        return false; // Ignore mutations inside our container
+      }
+      return true;
+    });
+    
+    if (!hasRelevantMutation) {
+      return; // All mutations were in our container, skip refresh
+    }
+    
+    // Throttle refresh calls
+    if (mutationTimeout) {
+      clearTimeout(mutationTimeout);
+    }
+    mutationTimeout = window.setTimeout(() => {
       console.log('[LieDetector] DOM changed, refreshing overlay positions...');
       refreshOverlayPositions();
-    }, 500)
-  );
+    }, 500);
+  });
   
   observer.observe(document.body, {
     childList: true,

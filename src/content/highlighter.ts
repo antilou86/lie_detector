@@ -14,7 +14,7 @@ import {
 
 const HIGHLIGHT_CLASS = 'LieDetector-highlight';
 const TOOLTIP_CLASS = 'LieDetector-tooltip';
-const OVERLAY_CONTAINER_ID = 'LieDetector-overlay-container';
+export const OVERLAY_CONTAINER_ID = 'LieDetector-overlay-container';
 
 // Track all highlighted claims with their text for re-finding
 interface TrackedClaim {
@@ -22,6 +22,8 @@ interface TrackedClaim {
   claimText: string;
   verification?: Verification;
   overlayElements: HTMLElement[];
+  // Store original rects relative to document for refresh
+  originalRects?: Array<{ top: number; left: number; width: number; height: number }>;
 }
 
 const trackedClaims = new Map<string, TrackedClaim>();
@@ -264,6 +266,52 @@ function createOverlays(
 }
 
 /**
+ * Create overlay elements from stored document-relative positions
+ */
+function createOverlaysFromStoredRects(
+  claimId: string,
+  rects: Array<{ top: number; left: number; width: number; height: number }>,
+  rating: Rating
+): HTMLElement[] {
+  const container = getOverlayContainer();
+  const color = RATING_COLORS[rating];
+  const borderStyle = rating === 'unverified' ? 'dotted' : 'solid';
+  const overlays: HTMLElement[] = [];
+  
+  for (const rect of rects) {
+    // Skip tiny rects (likely whitespace)
+    if (rect.width < 5 || rect.height < 5) continue;
+    
+    const overlay = document.createElement('div');
+    overlay.className = HIGHLIGHT_CLASS;
+    overlay.dataset.claimId = claimId;
+    overlay.dataset.rating = rating;
+    // Positions are already document-relative (include scroll offset from creation time)
+    overlay.style.cssText = `
+      position: absolute;
+      top: ${rect.top}px;
+      left: ${rect.left}px;
+      width: ${rect.width}px;
+      height: ${rect.height}px;
+      background-color: ${color}22;
+      border-bottom: 2px ${borderStyle} ${color};
+      pointer-events: auto;
+      cursor: pointer;
+      box-sizing: border-box;
+    `;
+    
+    // Use global tooltip management
+    overlay.addEventListener('mouseenter', () => showTooltipForClaim(claimId));
+    overlay.addEventListener('mouseleave', hideActiveTooltipDelayed);
+    
+    container.appendChild(overlay);
+    overlays.push(overlay);
+  }
+  
+  return overlays;
+}
+
+/**
  * Remove overlays for a claim
  */
 function removeOverlays(overlays: HTMLElement[]): void {
@@ -276,7 +324,7 @@ export function highlightClaim(
   detectedClaim: DetectedClaim, 
   verification?: Verification
 ): HighlightedClaim | null {
-  const { claim } = detectedClaim;
+  const { claim, range } = detectedClaim;
   
   // Check if already tracked
   if (trackedClaims.has(claim.id)) {
@@ -293,7 +341,24 @@ export function highlightClaim(
   }
   
   const rating = verification?.rating || 'unverified';
-  const rects = findTextRects(claim.text);
+  
+  // First try using the provided range (from selection) - works for multi-node text
+  let rects: DOMRect[] = [];
+  if (range) {
+    try {
+      rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0);
+      if (rects.length > 0) {
+        console.debug('[LieDetector] Using selection range for highlighting:', claim.id);
+      }
+    } catch (e) {
+      console.debug('[LieDetector] Could not get rects from range:', e);
+    }
+  }
+  
+  // Fall back to text search if range didn't work
+  if (rects.length === 0) {
+    rects = findTextRects(claim.text);
+  }
   
   if (rects.length === 0) {
     console.debug('[LieDetector] Could not find text for claim:', claim.text.substring(0, 50));
@@ -306,29 +371,74 @@ export function highlightClaim(
     return null;
   }
   
+  // Store original rects as document-relative positions for refresh
+  const originalRects = rects.map(r => ({
+    top: r.top + window.scrollY,
+    left: r.left + window.scrollX,
+    width: r.width,
+    height: r.height,
+  }));
+  
   const tracked: TrackedClaim = {
     claimId: claim.id,
     claimText: claim.text,
     verification,
     overlayElements: overlays,
+    originalRects,
   };
   
   trackedClaims.set(claim.id, tracked);
   
   console.log('[LieDetector] Successfully highlighted claim:', claim.id, claim.text.substring(0, 50));
   
+  // Check if there's a pending verification that arrived before registration
+  const pendingVerification = pendingVerifications.get(claim.id);
+  if (pendingVerification) {
+    console.log('[LieDetector] Applying pending verification for:', claim.id);
+    pendingVerifications.delete(claim.id);
+    tracked.verification = pendingVerification;
+    // Update overlay styles with the verified status
+    const pColor = RATING_COLORS[pendingVerification.rating];
+    const pBorderStyle = pendingVerification.rating === 'unverified' ? 'dotted' : 'solid';
+    for (const overlay of tracked.overlayElements) {
+      overlay.style.backgroundColor = `${pColor}22`;
+      overlay.style.borderBottom = `2px ${pBorderStyle} ${pColor}`;
+      overlay.dataset.rating = pendingVerification.rating;
+    }
+  }
+  
   return {
     claimId: claim.id,
     highlightElement: overlays[0],
-    verification,
+    verification: tracked.verification || verification,
   };
 }
-export function updateVerification(claimId: string, verification: Verification): void {
+
+// Pending verifications that arrived before claim was registered
+const pendingVerifications = new Map<string, Verification>();
+
+export function updateVerification(claimId: string, verification: Verification, retryCount = 0): void {
   const tracked = trackedClaims.get(claimId);
   if (!tracked) {
-    console.log('[LieDetector] updateVerification: claim not found', claimId);
+    // Claim not found - might be a race condition where verification arrived
+    // before the content script finished processing the highlight
+    if (retryCount < 5) {
+      console.log(`[LieDetector] updateVerification: claim not found yet, retry ${retryCount + 1}/5`, claimId);
+      // Store pending verification and retry after a short delay
+      pendingVerifications.set(claimId, verification);
+      setTimeout(() => {
+        updateVerification(claimId, verification, retryCount + 1);
+      }, 100 * (retryCount + 1)); // Exponential backoff: 100ms, 200ms, 300ms, 400ms, 500ms
+      return;
+    }
+    console.log('[LieDetector] updateVerification: claim not found after retries', claimId);
+    // Keep it in pending in case the claim is registered later
+    pendingVerifications.set(claimId, verification);
     return;
   }
+  
+  // Clear from pending if it was there
+  pendingVerifications.delete(claimId);
   
   console.log('[LieDetector] updateVerification:', claimId, verification.rating);
   tracked.verification = verification;
@@ -358,21 +468,38 @@ export function refreshOverlayPositions(): void {
   hideActiveTooltip();
   
   for (const [claimId, tracked] of trackedClaims) {
-    // Remove old overlays
-    removeOverlays(tracked.overlayElements);
-    
-    // Find text again and create new overlays
-    const rects = findTextRects(tracked.claimText);
-    
-    if (rects.length === 0) {
-      console.debug('[LieDetector] Could not re-find text for claim:', tracked.claimText.substring(0, 30));
-      tracked.overlayElements = [];
+    // Skip claims with no visual overlays (registered without highlight)
+    if (tracked.overlayElements.length === 0 && !tracked.originalRects) {
       continue;
     }
     
+    // Remove old overlays
+    removeOverlays(tracked.overlayElements);
+    
+    // Try to find text again and create new overlays
+    const rects = findTextRects(tracked.claimText);
     const rating = tracked.verification?.rating || 'unverified';
-    const newOverlays = createOverlays(claimId, rects, rating);
-    tracked.overlayElements = newOverlays;
+    
+    if (rects.length > 0) {
+      // Text found - create new overlays and update stored positions
+      const newOverlays = createOverlays(claimId, rects, rating);
+      tracked.overlayElements = newOverlays;
+      // Update stored rects
+      tracked.originalRects = rects.map(r => ({
+        top: r.top + window.scrollY,
+        left: r.left + window.scrollX,
+        width: r.width,
+        height: r.height,
+      }));
+    } else if (tracked.originalRects && tracked.originalRects.length > 0) {
+      // Text not found but we have stored positions - use them
+      console.debug('[LieDetector] Using stored rects for claim:', tracked.claimText.substring(0, 30));
+      const newOverlays = createOverlaysFromStoredRects(claimId, tracked.originalRects, rating);
+      tracked.overlayElements = newOverlays;
+    } else {
+      console.debug('[LieDetector] Could not re-find text and no stored rects for claim:', tracked.claimText.substring(0, 30));
+      tracked.overlayElements = [];
+    }
   }
   
   console.debug('[LieDetector] Refreshed overlay positions for', trackedClaims.size, 'claims');
@@ -431,4 +558,34 @@ export function getHighlightedClaimById(claimId: string): HighlightedClaim | und
     highlightElement: tracked.overlayElements[0] || document.createElement('div'),
     verification: tracked.verification,
   };
+}
+
+/**
+ * Register a claim for tracking without creating visual highlights.
+ * Used when the claim text can't be found in the DOM (e.g., spans multiple nodes)
+ * but we still want to receive verification updates.
+ */
+export function registerClaimWithoutHighlight(claim: { id: string; text: string }): void {
+  if (trackedClaims.has(claim.id)) {
+    console.debug('[LieDetector] Claim already tracked:', claim.id);
+    return;
+  }
+  
+  const tracked: TrackedClaim = {
+    claimId: claim.id,
+    claimText: claim.text,
+    verification: undefined,
+    overlayElements: [], // No visual elements
+  };
+  
+  trackedClaims.set(claim.id, tracked);
+  console.log('[LieDetector] Registered claim without highlight:', claim.id, claim.text.substring(0, 50));
+  
+  // Check if there's a pending verification that arrived before registration
+  const pendingVerification = pendingVerifications.get(claim.id);
+  if (pendingVerification) {
+    console.log('[LieDetector] Applying pending verification for non-highlighted claim:', claim.id);
+    pendingVerifications.delete(claim.id);
+    tracked.verification = pendingVerification;
+  }
 }

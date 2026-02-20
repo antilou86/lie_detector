@@ -1,5 +1,6 @@
 /**
- * Highlighter - Manages visual highlighting of claims and tooltips
+ * Highlighter - Uses overlay divs positioned over text (doesn't modify page DOM)
+ * This approach survives React/Vue/Angular re-renders
  */
 
 import { 
@@ -13,9 +14,37 @@ import {
 
 const HIGHLIGHT_CLASS = 'LieDetector-highlight';
 const TOOLTIP_CLASS = 'LieDetector-tooltip';
+const OVERLAY_CONTAINER_ID = 'LieDetector-overlay-container';
 
-// Track all highlighted claims
-const highlightedClaims = new Map<string, HighlightedClaim>();
+// Track all highlighted claims with their text for re-finding
+interface TrackedClaim {
+  claimId: string;
+  claimText: string;
+  verification?: Verification;
+  overlayElements: HTMLElement[];
+}
+
+const trackedClaims = new Map<string, TrackedClaim>();
+
+// Create or get the overlay container
+function getOverlayContainer(): HTMLElement {
+  let container = document.getElementById(OVERLAY_CONTAINER_ID);
+  if (!container) {
+    container = document.createElement('div');
+    container.id = OVERLAY_CONTAINER_ID;
+    container.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
+      z-index: 2147483646;
+    `;
+    document.body.appendChild(container);
+  }
+  return container;
+}
 
 function createTooltip(verification: Verification): HTMLElement {
   const tooltip = document.createElement('div');
@@ -58,191 +87,263 @@ function createTooltip(verification: Verification): HTMLElement {
   return tooltip;
 }
 
-function getUnderlineStyle(rating: Rating): string {
-  const color = RATING_COLORS[rating];
-  // Use a dotted underline for unverified, solid for others
-  const style = rating === 'unverified' ? 'dotted' : 'solid';
-  // Use !important to override page styles
-  return `border-bottom: 2px ${style} ${color} !important; background-color: ${color}22 !important; padding: 2px 0 !important;`;
-}
-
-function positionTooltip(tooltip: HTMLElement, anchor: HTMLElement): void {
-  const rect = anchor.getBoundingClientRect();
-  const tooltipRect = tooltip.getBoundingClientRect();
+/**
+ * Find text in the DOM and return its bounding rectangles
+ */
+function findTextRects(searchText: string): DOMRect[] {
+  const walker = document.createTreeWalker(
+    document.body,
+    NodeFilter.SHOW_TEXT,
+    null
+  );
   
-  // Default: position below the highlight
-  let top = rect.bottom + window.scrollY + 8;
-  let left = rect.left + window.scrollX;
+  // Try different search strategies
+  const searchStrategies = [
+    searchText.substring(0, 80),
+    searchText.substring(0, 50),
+    searchText.substring(0, 30),
+  ].filter(s => s.length > 0);
   
-  // If tooltip would go off the right edge, align to right
-  if (left + tooltipRect.width > window.innerWidth) {
-    left = window.innerWidth - tooltipRect.width - 16;
+  for (const search of searchStrategies) {
+    walker.currentNode = document.body;
+    
+    let node;
+    while ((node = walker.nextNode())) {
+      const textContent = node.textContent || '';
+      const index = textContent.indexOf(search);
+      
+      if (index !== -1) {
+        try {
+          const range = document.createRange();
+          const endOffset = Math.min(index + searchText.length, textContent.length);
+          range.setStart(node, index);
+          range.setEnd(node, endOffset);
+          
+          // Get all client rects (text may wrap across lines)
+          const rects = Array.from(range.getClientRects());
+          if (rects.length > 0) {
+            return rects;
+          }
+        } catch (e) {
+          // Range creation can fail
+        }
+      }
+    }
   }
   
-  // If tooltip would go off the bottom, show above instead
-  if (top + tooltipRect.height > window.scrollY + window.innerHeight) {
-    top = rect.top + window.scrollY - tooltipRect.height - 8;
-  }
-  
-  tooltip.style.top = `${top}px`;
-  tooltip.style.left = `${Math.max(8, left)}px`;
+  return [];
 }
 
 /**
- * Get all text nodes within a range
+ * Create overlay elements for the given rectangles
  */
-function getTextNodesInRange(range: Range): Text[] {
-  const textNodes: Text[] = [];
-  const walker = document.createTreeWalker(
-    range.commonAncestorContainer,
-    NodeFilter.SHOW_TEXT,
-    {
-      acceptNode: (node) => {
-        // Check if node is within the range
-        const nodeRange = document.createRange();
-        nodeRange.selectNodeContents(node);
-        const isInRange = range.compareBoundaryPoints(Range.START_TO_END, nodeRange) > 0 &&
-                         range.compareBoundaryPoints(Range.END_TO_START, nodeRange) < 0;
-        return isInRange ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-      }
-    }
-  );
+function createOverlays(
+  claimId: string,
+  rects: DOMRect[], 
+  rating: Rating,
+  onHover: () => void,
+  onLeave: () => void
+): HTMLElement[] {
+  const container = getOverlayContainer();
+  const color = RATING_COLORS[rating];
+  const borderStyle = rating === 'unverified' ? 'dotted' : 'solid';
+  const overlays: HTMLElement[] = [];
   
-  let node;
-  while (node = walker.nextNode()) {
-    if (node.textContent && node.textContent.trim()) {
-      textNodes.push(node as Text);
-    }
+  for (const rect of rects) {
+    // Skip tiny rects (likely whitespace)
+    if (rect.width < 5 || rect.height < 5) continue;
+    
+    const overlay = document.createElement('div');
+    overlay.className = HIGHLIGHT_CLASS;
+    overlay.dataset.claimId = claimId;
+    overlay.dataset.rating = rating;
+    overlay.style.cssText = `
+      position: absolute;
+      top: ${rect.top + window.scrollY}px;
+      left: ${rect.left + window.scrollX}px;
+      width: ${rect.width}px;
+      height: ${rect.height}px;
+      background-color: ${color}22;
+      border-bottom: 2px ${borderStyle} ${color};
+      pointer-events: auto;
+      cursor: pointer;
+      box-sizing: border-box;
+    `;
+    
+    overlay.addEventListener('mouseenter', onHover);
+    overlay.addEventListener('mouseleave', onLeave);
+    
+    container.appendChild(overlay);
+    overlays.push(overlay);
   }
-  return textNodes;
+  
+  return overlays;
+}
+
+/**
+ * Remove overlays for a claim
+ */
+function removeOverlays(overlays: HTMLElement[]): void {
+  for (const overlay of overlays) {
+    overlay.remove();
+  }
 }
 
 export function highlightClaim(
   detectedClaim: DetectedClaim, 
   verification?: Verification
 ): HighlightedClaim | null {
-  const { claim, element, range } = detectedClaim;
+  const { claim } = detectedClaim;
   
-  // Check if already highlighted and element still exists
-  if (highlightedClaims.has(claim.id)) {
-    const existing = highlightedClaims.get(claim.id)!;
-    // Check if the element is still in the DOM
-    if (document.contains(existing.highlightElement)) {
-      if (verification) {
-        updateVerification(claim.id, verification);
-      }
-      return existing;
-    } else {
-      // Element was removed (re-render), remove from tracking
-      highlightedClaims.delete(claim.id);
+  // Check if already tracked
+  if (trackedClaims.has(claim.id)) {
+    const tracked = trackedClaims.get(claim.id)!;
+    if (verification) {
+      updateVerification(claim.id, verification);
     }
+    // Return a HighlightedClaim-compatible object
+    return {
+      claimId: claim.id,
+      highlightElement: tracked.overlayElements[0] || document.createElement('div'),
+      verification: tracked.verification,
+    };
   }
   
-  try {
-    // Check if parent element still exists
-    if (!document.contains(element)) {
-      console.log('[LieDetector] Element no longer in DOM, skipping');
-      return null;
+  const rating = verification?.rating || 'unverified';
+  const rects = findTextRects(claim.text);
+  
+  if (rects.length === 0) {
+    console.debug('[LieDetector] Could not find text for claim:', claim.text.substring(0, 50));
+    return null;
+  }
+  
+  // Tooltip state
+  let tooltip: HTMLElement | null = null;
+  let hideTimeout: number | null = null;
+  
+  const showTooltip = () => {
+    if (hideTimeout) {
+      clearTimeout(hideTimeout);
+      hideTimeout = null;
     }
     
-    // Get verification from tracking if available
-    const rating = verification?.rating || 'unverified';
-    const color = RATING_COLORS[rating];
-    const style = rating === 'unverified' ? 'dotted' : 'solid';
+    const tracked = trackedClaims.get(claim.id);
+    if (!tracked?.verification) return;
     
-    let targetElement: HTMLElement;
-    
-    // Try multiple strategies to highlight the text
-    const wrapperStyles = (el: HTMLElement) => {
-      el.className = HIGHLIGHT_CLASS;
-      el.dataset.claimId = claim.id;
-      el.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
-      el.style.setProperty('background-color', `${color}22`, 'important');
-      el.style.setProperty('padding', '2px 0', 'important');
-      el.setAttribute('data-rating', rating);
-    };
-    
-    // Strategy 1: Try surroundContents (works for simple text nodes)
-    let wrapped = false;
-    try {
-      const wrapper = document.createElement('span');
-      wrapperStyles(wrapper);
-      range.surroundContents(wrapper);
-      targetElement = wrapper;
-      wrapped = true;
-      console.debug('[LieDetector] Highlighted using surroundContents');
-    } catch (e1) {
-      console.debug('[LieDetector] surroundContents failed:', e1);
-    }
-    
-    // Strategy 2: Try extractContents + insertNode (works when range crosses elements)
-    if (!wrapped) {
-      try {
-        const wrapper = document.createElement('span');
-        wrapperStyles(wrapper);
-        const contents = range.extractContents();
-        wrapper.appendChild(contents);
-        range.insertNode(wrapper);
-        targetElement = wrapper;
-        wrapped = true;
-        console.debug('[LieDetector] Highlighted using extractContents fallback');
-      } catch (e2) {
-        console.debug('[LieDetector] extractContents fallback failed:', e2);
-      }
-    }
-    
-    // Strategy 3: Fall back to highlighting all text nodes in range individually
-    if (!wrapped) {
-      try {
-        const textNodes = getTextNodesInRange(range);
-        if (textNodes.length > 0) {
-          // Wrap the first text node and use it as target
-          const firstWrapper = document.createElement('span');
-          wrapperStyles(firstWrapper);
-          const firstNode = textNodes[0];
-          const firstParent = firstNode.parentNode;
-          if (firstParent) {
-            firstParent.replaceChild(firstWrapper, firstNode);
-            firstWrapper.appendChild(firstNode);
-          }
-          targetElement = firstWrapper;
-          
-          // Wrap remaining text nodes
-          for (let i = 1; i < textNodes.length; i++) {
-            const wrapper = document.createElement('span');
-            wrapperStyles(wrapper);
-            const node = textNodes[i];
-            const parent = node.parentNode;
-            if (parent) {
-              parent.replaceChild(wrapper, node);
-              wrapper.appendChild(node);
-            }
-          }
-          wrapped = true;
-          console.debug('[LieDetector] Highlighted using text node wrapping');
+    if (!tooltip || !document.body.contains(tooltip)) {
+      tooltip = createTooltip(tracked.verification);
+      tooltip.setAttribute('data-claim-id', claim.id);
+      tooltip.style.pointerEvents = 'auto';
+      document.body.appendChild(tooltip);
+      
+      // Position tooltip near the first overlay
+      if (tracked.overlayElements.length > 0) {
+        const firstOverlay = tracked.overlayElements[0];
+        const rect = firstOverlay.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        
+        let top = rect.bottom + window.scrollY + 8;
+        let left = rect.left + window.scrollX;
+        
+        if (left + tooltipRect.width > window.innerWidth) {
+          left = window.innerWidth - tooltipRect.width - 16;
         }
-      } catch (e3) {
-        console.debug('[LieDetector] Text node wrapping failed:', e3);
+        if (top + tooltipRect.height > window.scrollY + window.innerHeight) {
+          top = rect.top + window.scrollY - tooltipRect.height - 8;
+        }
+        
+        tooltip.style.top = `${top}px`;
+        tooltip.style.left = `${Math.max(8, left)}px`;
       }
+      
+      tooltip.addEventListener('mouseenter', showTooltip);
+      tooltip.addEventListener('mouseleave', hideTooltipDelayed);
     }
     
-    // Strategy 4: Last resort - style the parent element
-    if (!wrapped) {
-      console.debug('[LieDetector] All wrapping strategies failed, styling parent element');
-      targetElement = element;
-      targetElement.classList.add(HIGHLIGHT_CLASS);
-      targetElement.dataset.claimId = claim.id;
-      targetElement.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
-      targetElement.style.setProperty('background-color', `${color}22`, 'important');
-      targetElement.setAttribute('data-rating', rating);
+    tooltip.classList.add('visible');
+  };
+  
+  const hideTooltipDelayed = () => {
+    hideTimeout = window.setTimeout(() => {
+      if (tooltip) {
+        tooltip.classList.remove('visible');
+      }
+    }, 200);
+  };
+  
+  const overlays = createOverlays(claim.id, rects, rating, showTooltip, hideTooltipDelayed);
+  
+  if (overlays.length === 0) {
+    return null;
+  }
+  
+  const tracked: TrackedClaim = {
+    claimId: claim.id,
+    claimText: claim.text,
+    verification,
+    overlayElements: overlays,
+  };
+  
+  trackedClaims.set(claim.id, tracked);
+  
+  console.log('[LieDetector] Successfully highlighted claim:', claim.id, claim.text.substring(0, 50));
+  
+  return {
+    claimId: claim.id,
+    highlightElement: overlays[0],
+    verification,
+  };
+}
+
+export function updateVerification(claimId: string, verification: Verification): void {
+  const tracked = trackedClaims.get(claimId);
+  if (!tracked) {
+    console.log('[LieDetector] updateVerification: claim not found', claimId);
+    return;
+  }
+  
+  console.log('[LieDetector] updateVerification:', claimId, verification.rating);
+  tracked.verification = verification;
+  
+  // Update overlay styles
+  const rating = verification.rating;
+  const color = RATING_COLORS[rating];
+  const borderStyle = rating === 'unverified' ? 'dotted' : 'solid';
+  
+  for (const overlay of tracked.overlayElements) {
+    overlay.style.backgroundColor = `${color}22`;
+    overlay.style.borderBottom = `2px ${borderStyle} ${color}`;
+    overlay.dataset.rating = rating;
+  }
+  
+  // Remove old tooltip (will be recreated on next hover)
+  const existingTooltip = document.querySelector(`.${TOOLTIP_CLASS}[data-claim-id="${claimId}"]`);
+  if (existingTooltip) {
+    existingTooltip.remove();
+  }
+}
+
+/**
+ * Refresh all overlay positions by re-finding text in DOM
+ */
+export function refreshOverlayPositions(): void {
+  for (const [claimId, tracked] of trackedClaims) {
+    // Remove old overlays
+    removeOverlays(tracked.overlayElements);
+    
+    // Find text again and create new overlays
+    const rects = findTextRects(tracked.claimText);
+    
+    if (rects.length === 0) {
+      console.debug('[LieDetector] Could not re-find text for claim:', tracked.claimText.substring(0, 30));
+      continue;
     }
     
-    const finalTarget = targetElement!;
+    const rating = tracked.verification?.rating || 'unverified';
     
-    // Setup tooltip interactions
+    // Tooltip handlers (recreate)
     let tooltip: HTMLElement | null = null;
     let hideTimeout: number | null = null;
-    const claimId = claim.id;
     
     const showTooltip = () => {
       if (hideTimeout) {
@@ -250,32 +351,39 @@ export function highlightClaim(
         hideTimeout = null;
       }
       
-      // Get current verification from stored state (may be updated after initial highlight)
-      const currentData = highlightedClaims.get(claimId);
-      const currentVerification = currentData?.verification;
+      const t = trackedClaims.get(claimId);
+      if (!t?.verification) return;
       
-      console.log('[LieDetector] showTooltip called, verification:', currentVerification ? 'yes' : 'no');
-      
-      // Check if tooltip was removed (e.g., by updateVerification)
-      if (tooltip && !document.body.contains(tooltip)) {
-        tooltip = null;
-      }
-      
-      if (!tooltip && currentVerification) {
-        console.log('[LieDetector] Creating tooltip for claim:', claimId);
-        tooltip = createTooltip(currentVerification);
+      if (!tooltip || !document.body.contains(tooltip)) {
+        tooltip = createTooltip(t.verification);
         tooltip.setAttribute('data-claim-id', claimId);
+        tooltip.style.pointerEvents = 'auto';
         document.body.appendChild(tooltip);
-        positionTooltip(tooltip, finalTarget);
         
-        // Allow hovering over tooltip
+        if (t.overlayElements.length > 0) {
+          const firstOverlay = t.overlayElements[0];
+          const rect = firstOverlay.getBoundingClientRect();
+          const tooltipRect = tooltip.getBoundingClientRect();
+          
+          let top = rect.bottom + window.scrollY + 8;
+          let left = rect.left + window.scrollX;
+          
+          if (left + tooltipRect.width > window.innerWidth) {
+            left = window.innerWidth - tooltipRect.width - 16;
+          }
+          if (top + tooltipRect.height > window.scrollY + window.innerHeight) {
+            top = rect.top + window.scrollY - tooltipRect.height - 8;
+          }
+          
+          tooltip.style.top = `${top}px`;
+          tooltip.style.left = `${Math.max(8, left)}px`;
+        }
+        
         tooltip.addEventListener('mouseenter', showTooltip);
-        tooltip.addEventListener('mouseleave', () => hideTooltipDelayed());
+        tooltip.addEventListener('mouseleave', hideTooltipDelayed);
       }
       
-      if (tooltip) {
-        tooltip.classList.add('visible');
-      }
+      tooltip.classList.add('visible');
     };
     
     const hideTooltipDelayed = () => {
@@ -286,75 +394,18 @@ export function highlightClaim(
       }, 200);
     };
     
-    const hideTooltipImmediate = () => {
-      if (tooltip) {
-        tooltip.remove();
-        tooltip = null;
-      }
-    };
-    
-    finalTarget.addEventListener('mouseenter', showTooltip);
-    finalTarget.addEventListener('mouseleave', hideTooltipDelayed);
-    finalTarget.addEventListener('click', (e) => {
-      // Don't prevent default - let links still work
-      console.log('[LieDetector] Claim clicked:', claim.id);
-    });
-    
-    const highlighted: HighlightedClaim = {
-      claimId: claim.id,
-      highlightElement: finalTarget,
-      verification,
-    };
-    
-    highlightedClaims.set(claim.id, highlighted);
-    
-    console.log('[LieDetector] Successfully highlighted claim:', claim.id, claim.text.substring(0, 50));
-    
-    return highlighted;
-  } catch (e) {
-    console.error('[LieDetector] Failed to highlight claim:', e, 'Claim:', claim.text.substring(0, 50));
-    return null;
-  }
-}
-
-export function updateVerification(claimId: string, verification: Verification): void {
-  const highlighted = highlightedClaims.get(claimId);
-  if (!highlighted) {
-    console.log('[LieDetector] updateVerification: claim not found', claimId);
-    return;
+    const newOverlays = createOverlays(claimId, rects, rating, showTooltip, hideTooltipDelayed);
+    tracked.overlayElements = newOverlays;
   }
   
-  console.log('[LieDetector] updateVerification:', claimId, verification.rating);
-  highlighted.verification = verification;
-  
-  // Update highlight style
-  const rating = verification.rating;
-  const color = RATING_COLORS[rating];
-  const style = rating === 'unverified' ? 'dotted' : 'solid';
-  
-  highlighted.highlightElement.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
-  highlighted.highlightElement.style.setProperty('background-color', `${color}22`, 'important');
-  highlighted.highlightElement.setAttribute('data-rating', rating);
-  
-  // Remove old tooltip if exists (will be recreated on next hover)
-  const existingTooltip = document.querySelector(`.${TOOLTIP_CLASS}[data-claim-id="${claimId}"]`);
-  if (existingTooltip) {
-    existingTooltip.remove();
-  }
+  console.debug('[LieDetector] Refreshed overlay positions for', trackedClaims.size, 'claims');
 }
 
 export function removeHighlight(claimId: string): void {
-  const highlighted = highlightedClaims.get(claimId);
-  if (!highlighted) return;
+  const tracked = trackedClaims.get(claimId);
+  if (!tracked) return;
   
-  const element = highlighted.highlightElement;
-  
-  // Remove our styles and classes (don't remove the element itself)
-  element.classList.remove(HIGHLIGHT_CLASS);
-  element.style.removeProperty('border-bottom');
-  element.style.removeProperty('background-color');
-  element.removeAttribute('data-claim-id');
-  element.removeAttribute('data-rating');
+  removeOverlays(tracked.overlayElements);
   
   // Remove tooltip if exists
   const tooltip = document.querySelector(`.${TOOLTIP_CLASS}[data-claim-id="${claimId}"]`);
@@ -362,19 +413,39 @@ export function removeHighlight(claimId: string): void {
     tooltip.remove();
   }
   
-  highlightedClaims.delete(claimId);
+  trackedClaims.delete(claimId);
 }
 
 export function removeAllHighlights(): void {
-  for (const claimId of highlightedClaims.keys()) {
+  for (const claimId of trackedClaims.keys()) {
     removeHighlight(claimId);
+  }
+  
+  // Also remove the container
+  const container = document.getElementById(OVERLAY_CONTAINER_ID);
+  if (container) {
+    container.remove();
   }
 }
 
 export function getHighlightedClaims(): Map<string, HighlightedClaim> {
-  return new Map(highlightedClaims);
+  const result = new Map<string, HighlightedClaim>();
+  for (const [id, tracked] of trackedClaims) {
+    result.set(id, {
+      claimId: id,
+      highlightElement: tracked.overlayElements[0] || document.createElement('div'),
+      verification: tracked.verification,
+    });
+  }
+  return result;
 }
 
 export function getHighlightedClaimById(claimId: string): HighlightedClaim | undefined {
-  return highlightedClaims.get(claimId);
+  const tracked = trackedClaims.get(claimId);
+  if (!tracked) return undefined;
+  return {
+    claimId,
+    highlightElement: tracked.overlayElements[0] || document.createElement('div'),
+    verification: tracked.verification,
+  };
 }

@@ -5,7 +5,7 @@
  */
 
 import { detectClaims, detectClaimsInSelection } from './claimDetector';
-import { highlightClaim, updateVerification, removeAllHighlights } from './highlighter';
+import { highlightClaim, updateVerification, removeAllHighlights, refreshOverlayPositions } from './highlighter';
 import { 
   ExtensionSettings, 
   DEFAULT_SETTINGS, 
@@ -179,11 +179,12 @@ async function initialize(): Promise<void> {
     scanPage();
   }, 1000);
   
-  // Re-apply highlights on DOM changes (for SPAs and virtual scrolling)
+  // Refresh overlay positions on DOM changes and scroll
+  // The new overlay approach doesn't modify DOM, so we just need to update positions
   const observer = new MutationObserver(
     throttle(() => {
-      console.log('[LieDetector] DOM changed, re-applying highlights...');
-      reapplyHighlights();
+      console.log('[LieDetector] DOM changed, refreshing overlay positions...');
+      refreshOverlayPositions();
     }, 500)
   );
   
@@ -191,68 +192,22 @@ async function initialize(): Promise<void> {
     childList: true,
     subtree: true,
   });
-}
-
-// Re-apply highlights to elements that match our detected claim texts
-function reapplyHighlights(): void {
-  if (detectedClaims.length === 0) return;
   
-  for (const detected of detectedClaims) {
-    // Check if current highlight element is still valid in DOM
-    const existingHighlight = document.querySelector(`[data-claim-id="${detected.claim.id}"]`);
-    if (existingHighlight && document.contains(existingHighlight)) {
-      continue; // Already highlighted and in DOM
+  // Refresh on scroll (text positions change)
+  let scrollTimeout: number | null = null;
+  window.addEventListener('scroll', () => {
+    if (scrollTimeout) {
+      clearTimeout(scrollTimeout);
     }
-    
-    // Find the claim text in the DOM and create a fresh range
-    const claimText = detected.claim.text;
-    const searchText = claimText.substring(0, 50); // Use first 50 chars for matching
-    
-    // Use TreeWalker to find text nodes containing our text
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-      null
-    );
-    
-    let found = false;
-    let node;
-    while ((node = walker.nextNode()) && !found) {
-      const textContent = node.textContent || '';
-      const index = textContent.indexOf(searchText);
-      
-      if (index !== -1) {
-        const parent = node.parentElement;
-        if (parent && !parent.classList.contains('LieDetector-highlight')) {
-          try {
-            // Create a new range for this text
-            const range = document.createRange();
-            const startOffset = index;
-            // Try to find the full claim text, or use what we can find
-            const endOffset = Math.min(
-              textContent.indexOf(searchText) + claimText.length,
-              textContent.length
-            );
-            
-            range.setStart(node, startOffset);
-            range.setEnd(node, Math.min(endOffset, textContent.length));
-            
-            // Update the detected claim with fresh references
-            detected.element = parent;
-            detected.range = range;
-            
-            // Get cached verification if available and re-highlight
-            const cachedVerification = verificationCache.get(detected.claim.id);
-            highlightClaim(detected, cachedVerification);
-            found = true;
-            console.debug(`[LieDetector] Re-highlighted claim: "${searchText}..."`);
-          } catch (e) {
-            console.debug('[LieDetector] Failed to re-highlight claim:', e);
-          }
-        }
-      }
-    }
-  }
+    scrollTimeout = window.setTimeout(() => {
+      refreshOverlayPositions();
+    }, 100);
+  }, { passive: true });
+  
+  // Refresh on resize
+  window.addEventListener('resize', throttle(() => {
+    refreshOverlayPositions();
+  }, 200));
 }
 
 // Start when DOM is ready

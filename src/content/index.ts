@@ -198,33 +198,57 @@ function reapplyHighlights(): void {
   if (detectedClaims.length === 0) return;
   
   for (const detected of detectedClaims) {
-    // Check if current element is still valid and highlighted
-    if (document.contains(detected.element) && 
-        detected.element.classList.contains('LieDetector-highlight')) {
+    // Check if current highlight element is still valid in DOM
+    const existingHighlight = document.querySelector(`[data-claim-id="${detected.claim.id}"]`);
+    if (existingHighlight && document.contains(existingHighlight)) {
       continue; // Already highlighted and in DOM
     }
     
-    // Find elements containing this claim text
-    const searchText = detected.claim.text.substring(0, 30); // Use first 30 chars for matching
+    // Find the claim text in the DOM and create a fresh range
+    const claimText = detected.claim.text;
+    const searchText = claimText.substring(0, 50); // Use first 50 chars for matching
     
-    // Use TreeWalker to find text nodes
+    // Use TreeWalker to find text nodes containing our text
     const walker = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
       null
     );
     
+    let found = false;
     let node;
-    while ((node = walker.nextNode())) {
-      if (node.textContent && node.textContent.includes(searchText)) {
+    while ((node = walker.nextNode()) && !found) {
+      const textContent = node.textContent || '';
+      const index = textContent.indexOf(searchText);
+      
+      if (index !== -1) {
         const parent = node.parentElement;
         if (parent && !parent.classList.contains('LieDetector-highlight')) {
-          // Update the element reference
-          detected.element = parent;
-          // Get cached verification if available
-          const cachedVerification = verificationCache.get(detected.claim.id);
-          highlightClaim(detected, cachedVerification);
-          break; // Found and highlighted, move to next claim
+          try {
+            // Create a new range for this text
+            const range = document.createRange();
+            const startOffset = index;
+            // Try to find the full claim text, or use what we can find
+            const endOffset = Math.min(
+              textContent.indexOf(searchText) + claimText.length,
+              textContent.length
+            );
+            
+            range.setStart(node, startOffset);
+            range.setEnd(node, Math.min(endOffset, textContent.length));
+            
+            // Update the detected claim with fresh references
+            detected.element = parent;
+            detected.range = range;
+            
+            // Get cached verification if available and re-highlight
+            const cachedVerification = verificationCache.get(detected.claim.id);
+            highlightClaim(detected, cachedVerification);
+            found = true;
+            console.debug(`[LieDetector] Re-highlighted claim: "${searchText}..."`);
+          } catch (e) {
+            console.debug('[LieDetector] Failed to re-highlight claim:', e);
+          }
         }
       }
     }

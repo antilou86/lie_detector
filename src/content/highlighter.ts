@@ -88,6 +88,35 @@ function positionTooltip(tooltip: HTMLElement, anchor: HTMLElement): void {
   tooltip.style.left = `${Math.max(8, left)}px`;
 }
 
+/**
+ * Get all text nodes within a range
+ */
+function getTextNodesInRange(range: Range): Text[] {
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(
+    range.commonAncestorContainer,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) => {
+        // Check if node is within the range
+        const nodeRange = document.createRange();
+        nodeRange.selectNodeContents(node);
+        const isInRange = range.compareBoundaryPoints(Range.START_TO_END, nodeRange) > 0 &&
+                         range.compareBoundaryPoints(Range.END_TO_START, nodeRange) < 0;
+        return isInRange ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
+    }
+  );
+  
+  let node;
+  while (node = walker.nextNode()) {
+    if (node.textContent && node.textContent.trim()) {
+      textNodes.push(node as Text);
+    }
+  }
+  return textNodes;
+}
+
 export function highlightClaim(
   detectedClaim: DetectedClaim, 
   verification?: Verification
@@ -116,35 +145,99 @@ export function highlightClaim(
       return null;
     }
     
-    // Create a span to wrap just the claim text
-    const wrapper = document.createElement('span');
-    wrapper.className = HIGHLIGHT_CLASS;
-    wrapper.dataset.claimId = claim.id;
-    
     // Get verification from tracking if available
     const rating = verification?.rating || 'unverified';
     const color = RATING_COLORS[rating];
     const style = rating === 'unverified' ? 'dotted' : 'solid';
     
-    // Apply inline styles to the wrapper span
-    wrapper.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
-    wrapper.style.setProperty('background-color', `${color}22`, 'important');
-    wrapper.style.setProperty('padding', '2px 0', 'important');
-    wrapper.setAttribute('data-rating', rating);
+    let targetElement: HTMLElement;
     
-    // Try to wrap the range contents with our span
+    // Try multiple strategies to highlight the text
+    const wrapperStyles = (el: HTMLElement) => {
+      el.className = HIGHLIGHT_CLASS;
+      el.dataset.claimId = claim.id;
+      el.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
+      el.style.setProperty('background-color', `${color}22`, 'important');
+      el.style.setProperty('padding', '2px 0', 'important');
+      el.setAttribute('data-rating', rating);
+    };
+    
+    // Strategy 1: Try surroundContents (works for simple text nodes)
+    let wrapped = false;
     try {
+      const wrapper = document.createElement('span');
+      wrapperStyles(wrapper);
       range.surroundContents(wrapper);
-    } catch (e) {
-      // surroundContents can fail if range spans multiple elements
-      // Fall back to extracting and inserting
-      console.debug('[LieDetector] surroundContents failed, using extractContents fallback');
-      const contents = range.extractContents();
-      wrapper.appendChild(contents);
-      range.insertNode(wrapper);
+      targetElement = wrapper;
+      wrapped = true;
+      console.debug('[LieDetector] Highlighted using surroundContents');
+    } catch (e1) {
+      console.debug('[LieDetector] surroundContents failed:', e1);
     }
     
-    const targetElement = wrapper;
+    // Strategy 2: Try extractContents + insertNode (works when range crosses elements)
+    if (!wrapped) {
+      try {
+        const wrapper = document.createElement('span');
+        wrapperStyles(wrapper);
+        const contents = range.extractContents();
+        wrapper.appendChild(contents);
+        range.insertNode(wrapper);
+        targetElement = wrapper;
+        wrapped = true;
+        console.debug('[LieDetector] Highlighted using extractContents fallback');
+      } catch (e2) {
+        console.debug('[LieDetector] extractContents fallback failed:', e2);
+      }
+    }
+    
+    // Strategy 3: Fall back to highlighting all text nodes in range individually
+    if (!wrapped) {
+      try {
+        const textNodes = getTextNodesInRange(range);
+        if (textNodes.length > 0) {
+          // Wrap the first text node and use it as target
+          const firstWrapper = document.createElement('span');
+          wrapperStyles(firstWrapper);
+          const firstNode = textNodes[0];
+          const firstParent = firstNode.parentNode;
+          if (firstParent) {
+            firstParent.replaceChild(firstWrapper, firstNode);
+            firstWrapper.appendChild(firstNode);
+          }
+          targetElement = firstWrapper;
+          
+          // Wrap remaining text nodes
+          for (let i = 1; i < textNodes.length; i++) {
+            const wrapper = document.createElement('span');
+            wrapperStyles(wrapper);
+            const node = textNodes[i];
+            const parent = node.parentNode;
+            if (parent) {
+              parent.replaceChild(wrapper, node);
+              wrapper.appendChild(node);
+            }
+          }
+          wrapped = true;
+          console.debug('[LieDetector] Highlighted using text node wrapping');
+        }
+      } catch (e3) {
+        console.debug('[LieDetector] Text node wrapping failed:', e3);
+      }
+    }
+    
+    // Strategy 4: Last resort - style the parent element
+    if (!wrapped) {
+      console.debug('[LieDetector] All wrapping strategies failed, styling parent element');
+      targetElement = element;
+      targetElement.classList.add(HIGHLIGHT_CLASS);
+      targetElement.dataset.claimId = claim.id;
+      targetElement.style.setProperty('border-bottom', `2px ${style} ${color}`, 'important');
+      targetElement.style.setProperty('background-color', `${color}22`, 'important');
+      targetElement.setAttribute('data-rating', rating);
+    }
+    
+    const finalTarget = targetElement!;
     
     // Setup tooltip interactions
     let tooltip: HTMLElement | null = null;
@@ -173,7 +266,7 @@ export function highlightClaim(
         tooltip = createTooltip(currentVerification);
         tooltip.setAttribute('data-claim-id', claimId);
         document.body.appendChild(tooltip);
-        positionTooltip(tooltip, targetElement);
+        positionTooltip(tooltip, finalTarget);
         
         // Allow hovering over tooltip
         tooltip.addEventListener('mouseenter', showTooltip);
@@ -200,16 +293,16 @@ export function highlightClaim(
       }
     };
     
-    targetElement.addEventListener('mouseenter', showTooltip);
-    targetElement.addEventListener('mouseleave', hideTooltipDelayed);
-    targetElement.addEventListener('click', (e) => {
+    finalTarget.addEventListener('mouseenter', showTooltip);
+    finalTarget.addEventListener('mouseleave', hideTooltipDelayed);
+    finalTarget.addEventListener('click', (e) => {
       // Don't prevent default - let links still work
       console.log('[LieDetector] Claim clicked:', claim.id);
     });
     
     const highlighted: HighlightedClaim = {
       claimId: claim.id,
-      highlightElement: targetElement,
+      highlightElement: finalTarget,
       verification,
     };
     

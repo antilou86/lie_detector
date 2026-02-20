@@ -2,16 +2,26 @@
 
 Real-time fact verification as you browse. Highlights claims with sources and confidence levels.
 
+## Features
+
+- **Automatic Claim Detection**: Uses NLP-based extraction via backend service
+- **Manual Verification**: Right-click any text and select "Check this claim"  
+- **Overlay Highlighting**: Non-destructive highlights that survive page re-renders (React/Vue/Angular)
+- **Smart Tooltips**: Hover over highlights to see verification details, sources, and confidence levels
+- **Multi-node Text Support**: Correctly highlights text spanning multiple DOM elements
+
 ## Development Setup
 
 ### Prerequisites
 - Node.js 18+ 
 - npm or yarn
+- Backend API running on port 3001
+- NLP service running on port 3002 (optional, for NLP extraction mode)
 
 ### Installation
 
 ```bash
-cd extension
+cd lie_detector
 npm install
 ```
 
@@ -31,7 +41,7 @@ npm run build
 2. Open Chrome and navigate to `chrome://extensions/`
 3. Enable "Developer mode" (top right)
 4. Click "Load unpacked"
-5. Select the `extension/dist` folder
+5. Select the `lie_detector/dist` folder
 
 ### Development Workflow
 
@@ -43,7 +53,7 @@ npm run build
 ## Project Structure
 
 ```
-extension/
+lie_detector/
 ├── manifest.json          # Extension manifest (MV3)
 ├── package.json           # Dependencies and scripts
 ├── tsconfig.json          # TypeScript configuration
@@ -53,17 +63,15 @@ extension/
 │   ├── types/             # TypeScript type definitions
 │   │   └── index.ts
 │   ├── content/           # Content script (runs on web pages)
-│   │   ├── index.ts       # Entry point
-│   │   ├── claimDetector.ts  # Claim detection logic
-│   │   └── highlighter.ts    # Highlight & tooltip rendering
+│   │   ├── index.ts       # Entry point, message handling
+│   │   ├── claimDetector.ts  # Pattern-based claim detection
+│   │   └── highlighter.ts    # Overlay highlights & tooltips
 │   ├── background/        # Service worker (background)
-│   │   └── serviceWorker.ts
+│   │   └── serviceWorker.ts  # API calls, context menu
 │   ├── popup/             # Popup UI (React)
 │   │   ├── popup.html
 │   │   ├── index.tsx
 │   │   └── App.tsx
-│   ├── services/          # Shared services
-│   │   └── mockVerificationService.ts
 │   └── styles/
 │       └── content.css    # Injected page styles
 └── dist/                  # Built extension (gitignored)
@@ -71,55 +79,57 @@ extension/
 
 ## Architecture
 
-### Content Script
+### Content Script (`src/content/`)
 Runs on every page to:
-- Detect verifiable health claims using pattern matching
-- Highlight claims with color-coded underlines
+- Detect verifiable claims using pattern matching or NLP extraction
+- Create overlay highlights positioned over text (doesn't modify page DOM)
 - Show tooltips with verification details on hover
+- Handle selection caching for context menu verification
+- Manage DOM mutation observers for dynamic pages
 
-### Background Service Worker
+### Background Service Worker (`src/background/`)
 Handles:
-- Communication with verification API (currently mocked)
+- Communication with verification API (port 3001)
 - Context menu "Check this claim" functionality
 - Badge updates showing claim counts
+- Message passing between content scripts and backend
 
-### Popup
+### Popup (`src/popup/`)
 React-based UI showing:
 - Extension enable/disable toggle
 - Page statistics (claims found, verified, issues)
-- List of detected claims
-- Links to methodology and settings
+- List of detected claims with ratings
+- Extraction mode toggle (Pattern/NLP)
 
-## MVP Limitations
+## Verification Flow
 
-This is an MVP scaffold. Current limitations:
+1. User loads a page or selects text
+2. Content script detects claims or user right-clicks "Check this claim"
+3. Background script sends claims to backend API
+4. Backend queries Google Fact Check API, falls back to OpenAI analysis
+5. Verification results sent back to content script
+6. Overlays updated with color-coded ratings
 
-1. **Mock Verification**: Uses randomized mock data instead of real API
-2. **Pattern-Based Detection**: Uses regex + keywords instead of NLP
-3. **Health Focus**: Only detects health/medical claims
-4. **No Human Review**: All verifications are automated
-5. **No Persistence**: Claims aren't cached between page loads
+## Rating Colors
 
-## Next Steps
+| Rating | Color | Description |
+|--------|-------|-------------|
+| `verified` | Green | Confirmed true |
+| `mostly_true` | Light Green | Mostly accurate |
+| `mixed` | Yellow | Contains both true and false |
+| `mostly_false` | Orange | Mostly inaccurate |
+| `false` | Red | Confirmed false |
+| `unverified` | Gray (dotted) | No fact-checks found |
 
-See [PROJECT_BRIEF.md](../PROJECT_BRIEF.md) for the full roadmap.
+## Troubleshooting
 
-Immediate priorities:
-1. Replace mock service with real backend API
-2. Implement NLP-based claim extraction
-3. Curate initial health source database
-4. Add user settings panel
-5. Implement claim caching
+### Highlights disappear after DOM changes
+The extension uses stored rect positions as fallback when text can't be re-found in DOM.
 
-## Icons
+### Tooltip flashing
+Ensure the backend is responding quickly. Slow responses can cause UI issues.
 
-The SVG icons need to be converted to PNG for Chrome:
-
-```bash
-# Using ImageMagick or similar tool
-convert icon16.svg icon16.png
-convert icon48.svg icon48.png
-convert icon128.svg icon128.png
-```
-
-Or create proper PNG icons using a design tool.
+### Claims not being verified
+1. Check that backend is running on port 3001
+2. Check browser console for errors
+3. Verify API keys are configured in backend `.env`

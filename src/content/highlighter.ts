@@ -32,13 +32,27 @@ const trackedClaims = new Map<string, TrackedClaim>();
 let activeTooltip: HTMLElement | null = null;
 let activeTooltipClaimId: string | null = null;
 let tooltipHideTimeout: number | null = null;
+let tooltipShowTimeout: number | null = null;
+let lastHiddenClaimId: string | null = null;
+let lastHiddenTime = 0;
+let isHoveringOverlay = false; // Track if mouse is over any overlay
+
+export function isTooltipActive(): boolean {
+  return isHoveringOverlay || activeTooltip !== null;
+}
 
 function hideActiveTooltip(): void {
   if (tooltipHideTimeout) {
     clearTimeout(tooltipHideTimeout);
     tooltipHideTimeout = null;
   }
+  if (tooltipShowTimeout) {
+    clearTimeout(tooltipShowTimeout);
+    tooltipShowTimeout = null;
+  }
   if (activeTooltip) {
+    lastHiddenClaimId = activeTooltipClaimId;
+    lastHiddenTime = Date.now();
     activeTooltip.remove();
     activeTooltip = null;
     activeTooltipClaimId = null;
@@ -64,26 +78,56 @@ function cancelTooltipHide(): void {
 function showTooltipForClaim(claimId: string): void {
   cancelTooltipHide();
   
-  const tracked = trackedClaims.get(claimId);
-  if (!tracked?.verification) return;
-  
   // If same tooltip is already showing, just cancel hide
   if (activeTooltipClaimId === claimId && activeTooltip && document.body.contains(activeTooltip)) {
     return;
   }
   
-  // Remove any existing tooltip
-  hideActiveTooltip();
+  // Prevent rapid re-show of same tooltip (debounce flashing)
+  if (lastHiddenClaimId === claimId && Date.now() - lastHiddenTime < 100) {
+    return;
+  }
   
-  // Create new tooltip
-  activeTooltip = createTooltip(tracked.verification);
+  const tracked = trackedClaims.get(claimId);
+  if (!tracked) return;
+  
+  // Clear any pending show
+  if (tooltipShowTimeout) {
+    clearTimeout(tooltipShowTimeout);
+  }
+  
+  // Show tooltip immediately (removed delay that was causing issues)
+  // Double-check we should still show (claim might have been hidden)
+  if (activeTooltipClaimId === claimId) return;
+  
+  const trackedInner = trackedClaims.get(claimId);
+  if (!trackedInner) return;
+  
+  // Remove any existing tooltip
+  if (activeTooltip) {
+    activeTooltip.remove();
+    activeTooltip = null;
+  }
+  
+  // Create tooltip - use verification if available, or show as unverified
+  const verification: Verification = trackedInner.verification || {
+    claimId: claimId,
+    rating: 'unverified' as const,
+    confidence: 0,
+    summary: 'Verification in progress...',
+    evidence: [],
+    lastUpdated: new Date(),
+    humanReviewed: false,
+  };
+  
+  activeTooltip = createTooltip(verification);
   activeTooltip.setAttribute('data-claim-id', claimId);
   activeTooltipClaimId = claimId;
   document.body.appendChild(activeTooltip);
   
   // Position tooltip near the first overlay
-  if (tracked.overlayElements.length > 0) {
-    const firstOverlay = tracked.overlayElements[0];
+  if (trackedInner.overlayElements.length > 0) {
+    const firstOverlay = trackedInner.overlayElements[0];
     const rect = firstOverlay.getBoundingClientRect();
     
     let top = rect.bottom + window.scrollY + 8;
@@ -105,11 +149,22 @@ function showTooltipForClaim(claimId: string): void {
       activeTooltip.style.left = `${Math.max(8, left)}px`;
       activeTooltip.classList.add('visible');
     });
+  } else {
+    // No overlay elements - show tooltip at mouse position or center
+    activeTooltip.style.top = '100px';
+    activeTooltip.style.left = '100px';
+    activeTooltip.classList.add('visible');
   }
   
   // Allow hovering over tooltip
-  activeTooltip.addEventListener('mouseenter', cancelTooltipHide);
-  activeTooltip.addEventListener('mouseleave', hideActiveTooltipDelayed);
+  activeTooltip.addEventListener('mouseenter', () => {
+    isHoveringOverlay = true;
+    cancelTooltipHide();
+  });
+  activeTooltip.addEventListener('mouseleave', () => {
+    isHoveringOverlay = false;
+    hideActiveTooltipDelayed();
+  });
 }
 
 // Create or get the overlay container
@@ -255,8 +310,14 @@ function createOverlays(
     `;
     
     // Use global tooltip management
-    overlay.addEventListener('mouseenter', () => showTooltipForClaim(claimId));
-    overlay.addEventListener('mouseleave', hideActiveTooltipDelayed);
+    overlay.addEventListener('mouseenter', () => {
+      isHoveringOverlay = true;
+      showTooltipForClaim(claimId);
+    });
+    overlay.addEventListener('mouseleave', () => {
+      isHoveringOverlay = false;
+      hideActiveTooltipDelayed();
+    });
     
     container.appendChild(overlay);
     overlays.push(overlay);
@@ -301,8 +362,14 @@ function createOverlaysFromStoredRects(
     `;
     
     // Use global tooltip management
-    overlay.addEventListener('mouseenter', () => showTooltipForClaim(claimId));
-    overlay.addEventListener('mouseleave', hideActiveTooltipDelayed);
+    overlay.addEventListener('mouseenter', () => {
+      isHoveringOverlay = true;
+      showTooltipForClaim(claimId);
+    });
+    overlay.addEventListener('mouseleave', () => {
+      isHoveringOverlay = false;
+      hideActiveTooltipDelayed();
+    });
     
     container.appendChild(overlay);
     overlays.push(overlay);
@@ -464,6 +531,12 @@ export function updateVerification(claimId: string, verification: Verification, 
  * Refresh all overlay positions by re-finding text in DOM
  */
 export function refreshOverlayPositions(): void {
+  // Skip refresh if user is interacting with tooltip
+  if (isHoveringOverlay || activeTooltip) {
+    console.debug('[LieDetector] Skipping overlay refresh - tooltip active');
+    return;
+  }
+  
   // Hide any active tooltip during refresh
   hideActiveTooltip();
   

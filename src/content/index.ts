@@ -5,7 +5,7 @@
  */
 
 import { detectClaims, detectClaimsInSelection } from './claimDetector';
-import { highlightClaim, updateVerification, removeAllHighlights, refreshOverlayPositions, registerClaimWithoutHighlight, OVERLAY_CONTAINER_ID } from './highlighter';
+import { highlightClaim, updateVerification, removeAllHighlights, refreshOverlayPositions, registerClaimWithoutHighlight, OVERLAY_CONTAINER_ID, isTooltipActive } from './highlighter';
 import { 
   ExtensionSettings, 
   DEFAULT_SETTINGS, 
@@ -596,11 +596,20 @@ async function initialize(): Promise<void> {
       return; // All mutations were in our container, skip refresh
     }
     
+    // Don't refresh while tooltip is active
+    if (isTooltipActive()) {
+      return;
+    }
+    
     // Throttle refresh calls
     if (mutationTimeout) {
       clearTimeout(mutationTimeout);
     }
     mutationTimeout = window.setTimeout(() => {
+      // Double-check tooltip isn't active when timeout fires
+      if (isTooltipActive()) {
+        return;
+      }
       console.log('[LieDetector] DOM changed, refreshing overlay positions...');
       refreshOverlayPositions();
     }, 500);
@@ -617,14 +626,22 @@ async function initialize(): Promise<void> {
     if (scrollTimeout) {
       clearTimeout(scrollTimeout);
     }
+    // Don't refresh while tooltip is active
+    if (isTooltipActive()) {
+      return;
+    }
     scrollTimeout = window.setTimeout(() => {
-      refreshOverlayPositions();
+      if (!isTooltipActive()) {
+        refreshOverlayPositions();
+      }
     }, 100);
   }, { passive: true });
   
   // Refresh on resize
   window.addEventListener('resize', throttle(() => {
-    refreshOverlayPositions();
+    if (!isTooltipActive()) {
+      refreshOverlayPositions();
+    }
   }, 200));
 }
 
